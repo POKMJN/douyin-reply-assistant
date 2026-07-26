@@ -1,6 +1,13 @@
 # Build outputs and installers
 *.exe
-resources/app.asar.codex-*
+/package.json
+resources/app.asar.*
+resources/*.png
+resources/*.ico
+app-source/dist/favicon.png
+app.js
+douyin-service.cjs
+output/
 
 # Electron runtime copied beside the installer
 *.dll

@@ -19,7 +19,7 @@
 当前 Windows 安装包请在 GitHub Releases 中下载：
 
 ```text
-续声_安装包_v0.1.0.exe
+续声_安装包_v0.2.0.exe
 ```
 
 下载并双击安装后启动续声，先登录抖音，再进入“模型设置”添加一个 OpenAI 兼容接口。配置完成后可以同步联系人、生成手动回复，或开启 AI 自动回复和续火花任务。
@@ -44,7 +44,8 @@ npm test
 重新打包应用 ASAR：
 
 ```bash
-npx --yes @electron/asar pack app-source resources/app.asar
+cd app-source
+npm run package:asar
 ```
 
 重新生成安装包需要 Inno Setup 6：

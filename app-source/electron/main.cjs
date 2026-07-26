@@ -13,9 +13,18 @@ let isQuitting = false
 let ownsBytedanceProtocol = false
 
 const BYTEDANCE_PROTOCOL = 'bytedance'
+const assetPath = (name) => path.join(__dirname, '..', 'dist', name)
 const isBytedanceUrl = (value) => typeof value === 'string' && /^bytedance:/i.test(value)
 const hasBytedanceUrl = (argv) => argv.some(isBytedanceUrl)
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+function imageOrFallback(...names) {
+  for (const name of names) {
+    const image = nativeImage.createFromPath(assetPath(name))
+    if (!image.isEmpty()) return image
+  }
+  return nativeImage.createEmpty()
+}
 
 if (!hasSingleInstanceLock) app.quit()
 
@@ -30,13 +39,13 @@ app.on('second-instance', (_event, argv) => {
 
 function createWindow() {
   const settings = storage?.get()?.settings || {}
-  const appIcon = path.join(__dirname, '..', 'dist', 'favicon.svg')
+  const appIcon = assetPath('app-icon.png')
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
     minWidth: 980,
     minHeight: 680,
-    backgroundColor: '#f5f7f8',
+    backgroundColor: '#fff7e8',
     icon: appIcon,
     title: '续声 · 抖音私信助手',
     autoHideMenuBar: true,
@@ -83,7 +92,7 @@ function notifyAutomationEvent(event) {
   if (!settings.desktopNotifications || !Notification.isSupported() || event?.type !== 'log') return
   const type = String(event.payload?.type || '')
   const failed = /fail|error/i.test(type)
-  const succeeded = /sent|success/i.test(type)
+  const succeeded = /sent|success|answered/i.test(type)
   if ((failed && settings.notifyOnFailure === false) || (succeeded && settings.notifyOnSuccess === false)) return
   if (!failed && !succeeded) return
   new Notification({
@@ -94,7 +103,7 @@ function notifyAutomationEvent(event) {
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'dist', 'favicon.svg'))
+  const icon = imageOrFallback('tray-icon.png', 'app-icon.png')
   tray = new Tray(icon.resize({ width: 16, height: 16 }))
   tray.setToolTip('续声 · 抖音私信助手')
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -128,6 +137,7 @@ ipcMain.handle('douyin:sync-contacts', () => getDouyinService().syncContacts())
 ipcMain.handle('douyin:learn-contact', (_event, name) => getDouyinService().learnConversation(name))
 ipcMain.handle('douyin:send-message', (_event, { name, text }) => getDouyinService().sendMessage(name, text))
 ipcMain.handle('douyin:send-task', (_event, { name, task }) => getDouyinService().sendTask(name, task))
+ipcMain.handle('douyin:start-inquiry', (_event, payload) => getDouyinService().startInquiry(payload || {}))
 ipcMain.handle('automation:get-state', () => storage.get())
 ipcMain.handle('automation:update', (_event, config) => {
   if (!storage) throw new Error('本机配置尚未加载，请重试')
@@ -149,6 +159,7 @@ ipcMain.handle('ai:draft', async (_event, payload) => { try { return await ai.dr
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return
   if (process.platform === 'win32') {
+    app.setAppUserModelId('xusheng.desktop')
     ownsBytedanceProtocol = app.setAsDefaultProtocolClient(BYTEDANCE_PROTOCOL)
   }
   storage = new JsonStorage(app.getPath('userData'))
