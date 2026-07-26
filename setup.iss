@@ -1,7 +1,10 @@
 #define MyAppName "续声"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "续声"
 #define MyAppExeName "续声.exe"
+#ifndef MyAppAsarSource
+#define MyAppAsarSource "resources\app.asar"
+#endif
 
 [Setup]
 AppId={{D764D0BC-CF29-4EBD-B669-C53060B4FA93}
@@ -48,10 +51,11 @@ Source: "chrome_200_percent.pak"; DestDir: "{app}"; Flags: ignoreversion uninsre
 Source: "resources.pak"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
 ; Vulkan 配置
 Source: "vk_swiftshader_icd.json"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
-; 语言包
-Source: "locales\*"; DestDir: "{app}\locales"; Flags: ignoreversion recursesubdirs uninsremovereadonly
+; 语言包：仅保留中文与英文回退，避免把全部 Chromium locale 打进安装包
+Source: "locales\zh-CN.pak"; DestDir: "{app}\locales"; Flags: ignoreversion uninsremovereadonly
+Source: "locales\en-US.pak"; DestDir: "{app}\locales"; Flags: ignoreversion uninsremovereadonly
 ; ASAR 应用包
-Source: "resources\app.asar"; DestDir: "{app}\resources"; Flags: ignoreversion uninsremovereadonly
+Source: "{#MyAppAsarSource}"; DestDir: "{app}\resources"; DestName: "app.asar"; Flags: ignoreversion uninsremovereadonly
 ; 许可证和说明
 Source: "LICENSE.electron.txt"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
 Source: "LICENSES.chromium.html"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly

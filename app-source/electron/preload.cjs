@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
     learnContact: (name) => ipcRenderer.invoke('douyin:learn-contact', name),
     sendMessage: (name, text) => ipcRenderer.invoke('douyin:send-message', { name, text }),
     sendTask: (name, task) => ipcRenderer.invoke('douyin:send-task', { name, task }),
+    startInquiry: (name, question) => ipcRenderer.invoke('douyin:start-inquiry', { name, question }),
   },
   automation: {
     getState: () => ipcRenderer.invoke('automation:get-state'),
