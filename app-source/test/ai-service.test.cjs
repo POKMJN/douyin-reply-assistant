@@ -20,7 +20,7 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain)
 }
 
-const { AiService, buildChatMessages, buildChatPrompt, buildLearningProfile, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, labelAiReply, normalizeVideoInput, timeContext } = require('../electron/ai-service.cjs')
+const { AiService, buildChatMessages, buildChatPrompt, buildLearningProfile, buildTurnGuidance, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, isNoReplyDecision, labelAiReply, normalizeVideoInput, replyQualityIssues, timeContext } = require('../electron/ai-service.cjs')
 Module._load = originalLoad
 
 test('provider test and draft both call chat completions', async (t) => {
@@ -175,7 +175,81 @@ test('learned conversation produces style summaries and real chat roles', () => 
   assert.match(messages[0].content, /自动学习到的对方说话特点/)
 })
 
-test('video replies use a compact prompt and at most three low-detail frames', () => {
+test('turn guidance chooses a compact response move from message intent and history', () => {
+  const contact = {
+    learning: {
+      messages: [
+        { role: 'me', text: '后来怎么样了？' },
+        { role: 'contact', text: '终于过了哈哈哈' },
+      ],
+    },
+  }
+
+  const guidance = buildTurnGuidance(contact, '终于过了哈哈哈')
+  assert.match(guidance, /分享好消息或兴奋点/)
+  assert.match(guidance, /适合接梗/)
+  assert.match(guidance, /别写成正式祝贺词/)
+  assert.match(buildChatPrompt(contact, '终于过了哈哈哈'), /每次只选一个主要接法/)
+})
+
+test('reply quality checks catch mechanical chat patterns without rejecting normal short replies', () => {
+  assert.deepEqual(replyQualityIssues('笑死，后面那个停顿太绝了'), [])
+  assert.match(replyQualityIssues('我理解你的感受，如果你愿意，我可以给你一些建议。你怎么看？还有别的吗？').join('、'), /客服腔或 AI 腔/)
+  assert.match(replyQualityIssues('我理解你的感受，如果你愿意，我可以给你一些建议。你怎么看？还有别的吗？').join('、'), /连续追问/)
+  assert.equal(cleanGeneratedText('```text\n那也太离谱了\n```'), '那也太离谱了')
+  assert.equal(isNoReplyDecision('[不回复]'), true)
+})
+
+test('mechanical drafts are conditionally rewritten into a natural short reply', async (t) => {
+  const requests = []
+  const server = http.createServer((request, response) => {
+    let body = ''
+    request.setEncoding('utf8')
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      requests.push(JSON.parse(body))
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      const content = requests.length === 1
+        ? '我理解你的感受，如果你愿意，我可以给你一些建议。你怎么看？还有别的吗？'
+        : '也太折磨了，先缓一会儿吧'
+      response.end(JSON.stringify({ choices: [{ message: { content } }] }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const storage = {
+    get: () => ({ providers: [{ name: 'Rewrite', model: 'rewrite-model', baseUrl: `http://127.0.0.1:${server.address().port}`, keyCipher: Buffer.from('key').toString('base64') }] }),
+    addLog: () => {},
+  }
+
+  const result = await new AiService(storage).draft({ contact: { name: '小明' }, incoming: '今天真的累死了' })
+
+  assert.equal(result.text, '也太折磨了，先缓一会儿吧')
+  assert.equal(requests.length, 2)
+  assert.equal(requests[1].temperature, 0.65)
+  assert.match(requests[1].messages.at(-1).content, /保留原意和已知事实/)
+})
+
+test('explicit no-reply decisions are returned as skipped instead of fallback text', async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    response.end(JSON.stringify({ choices: [{ message: { content: '[不回复]' } }] }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  const storage = {
+    get: () => ({ providers: [{ name: 'Skip', model: 'skip-model', baseUrl: `http://127.0.0.1:${server.address().port}`, keyCipher: Buffer.from('key').toString('base64') }] }),
+    addLog: () => {},
+  }
+
+  const result = await new AiService(storage).draft({ contact: { name: '小明' }, incoming: '昨晚的临时邀约' })
+
+  assert.equal(result.skipped, true)
+  assert.equal(result.text, '')
+  assert.equal(result.labeledText, '')
+})
+
+test('video replies use a compact prompt and at most three low-detail frames for raw frame arrays', () => {
   const frames = Array.from({ length: 4 }, (_, index) => `data:image/jpeg;base64,frame${index}`)
   const messages = buildChatMessages({
     name: '小明',
@@ -183,10 +257,36 @@ test('video replies use a compact prompt and at most three low-detail frames', (
     learning: { ownerStyle: { summary: '偏短句' }, messages: Array.from({ length: 10 }, (_, index) => ({ role: index % 2 ? 'me' : 'contact', text: `历史消息${index}` })) },
   }, '[视频]', frames)
 
-  assert.match(messages[0].content, /请看懂对方刚发的视频画面/)
+  assert.match(messages[0].content, /像真人刚看完一样/)
+  assert.match(messages[0].content, /不要每句都用[“"]这[”"]或[“"]这个[”"]开头/)
+  assert.doesNotMatch(messages[0].content, /这个角度看着有点像/)
   assert.equal(messages.length, 6)
   assert.equal(messages.at(-1).content.filter((part) => part.type === 'image_url').length, 3)
   assert.ok(messages.at(-1).content.filter((part) => part.type === 'image_url').every((part) => part.image_url.detail === 'low'))
+})
+
+test('captured video metadata can send more high-detail frames to vision models', () => {
+  const frames = Array.from({ length: 7 }, (_, index) => `data:image/jpeg;base64,frame${index}`)
+  const media = normalizeVideoInput({
+    frames,
+    maxFrames: 6,
+    frameDetail: 'high',
+    mediaKind: 'video',
+    detectedVideo: true,
+    videoReady: true,
+    confidence: 'high',
+    audioTranscript: '视频里有人笑着说太离谱了',
+  })
+  const messages = buildChatMessages({ name: '小明' }, '[视频]', [], '前几帧铺垫，后面有反转笑点。', media)
+  const userContent = messages.at(-1).content
+  const imageParts = userContent.filter((part) => part.type === 'image_url')
+
+  assert.equal(media.frames.length, 6)
+  assert.equal(imageParts.length, 6)
+  assert.ok(imageParts.every((part) => part.image_url.detail === 'high'))
+  assert.match(userContent[0].text, /画质 high/)
+  assert.match(userContent[0].text, /视频理解结果：前几帧铺垫，后面有反转笑点。/)
+  assert.match(userContent[0].text, /视频音频转写：视频里有人笑着说太离谱了/)
 })
 
 test('video inputs keep capture metadata for conservative replies', () => {
@@ -294,10 +394,12 @@ test('video drafts analyze frames before generating the final reply', async (t) 
   })
 
   assert.equal(result.text, '看着还挺香的诶')
-  assert.equal(requests.length, 2)
+  assert.equal(requests.length, 3)
   assert.match(requests[0].messages[0].content, /先理解一条抖音私信里的媒体内容/)
-  assert.match(requests[1].messages.at(-1).content[0].text, /视觉理解摘要/)
+  assert.doesNotMatch(requests[0].messages.at(-1).content[0].text, /这些画面按时间顺序抽取/)
+  assert.match(requests[1].messages.at(-1).content[0].text, /视频理解结果/)
   assert.match(requests[1].messages.at(-1).content[0].text, /画面里有人在做饭/)
+  // request[2] is the second candidate from multi-candidate generation
 })
 
 test('video analysis preflight can be disabled to use one model call', async (t) => {
@@ -325,8 +427,9 @@ test('video analysis preflight can be disabled to use one model call', async (t)
   })
 
   assert.equal(result.text, '这个画面挺有意思')
-  assert.equal(requests.length, 1)
-  assert.doesNotMatch(requests[0].messages.at(-1).content[0].text, /视觉理解摘要/)
+  assert.equal(requests.length, 2)
+  assert.doesNotMatch(requests[0].messages.at(-1).content[0].text, /视频理解结果/)
+  // Two calls because multi-candidate generates 2 candidates
 })
 
 test('AI replies expose a model label while preserving natural response text', () => {

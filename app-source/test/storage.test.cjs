@@ -49,6 +49,7 @@ test('saved settings merge with new defaults', (t) => {
   assert.equal(state.settings.videoRecognitionStrength, 'standard')
   assert.equal(state.settings.videoLowConfidenceReply, true)
   assert.equal(state.settings.videoAnalysisFirst, true)
+  assert.equal(state.settings.aiReplyDraftOnly, false)
 })
 
 test('legacy video reply switch migrates to the recognition switch', (t) => {
