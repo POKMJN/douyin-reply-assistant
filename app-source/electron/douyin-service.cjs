@@ -10,7 +10,6 @@ const CHAT_URL = 'https://www.douyin.com/chat?isPopup=1'
 const PARTITION = 'persist:douyin-account'
 const AUTOMATION_POLL_MS = 1000
 const SPARK_RETRY_MS = 5 * 60 * 1000
-const RECENT_SELF_PREVIEW_MS = 60 * 1000
 const VIDEO_SHARE_HARD_DAILY_LIMIT = 10
 const VIDEO_SHARE_DEFAULT_DAILY_LIMIT = 3
 const VIDEO_SHARE_MIN_INTERVAL_MS = 45 * 60 * 1000
@@ -260,9 +259,9 @@ const normalizeVideoRecognitionStrength = (value) => {
 const videoRecognitionOptions = (settings = {}) => {
   const strength = normalizeVideoRecognitionStrength(settings.videoRecognitionStrength)
   const presets = {
-    light: { strength, maxFrames: 2, audio: false, commentLimit: 0, commentWaitMs: 0, frameDetail: 'low', imageMaxSize: 640, jpegQuality: 56 },
-    standard: { strength, maxFrames: 5, audio: true, commentLimit: 5, commentWaitMs: 3500, frameDetail: 'auto', imageMaxSize: 768, jpegQuality: 64 },
-    deep: { strength, maxFrames: 9, audio: true, commentLimit: 12, commentWaitMs: 6500, frameDetail: 'high', imageMaxSize: 960, jpegQuality: 72 },
+    light: { strength, maxFrames: 1, audio: false, commentLimit: 0, commentWaitMs: 0 },
+    standard: { strength, maxFrames: 3, audio: true, commentLimit: 3, commentWaitMs: 3000 },
+    deep: { strength, maxFrames: 3, audio: true, commentLimit: 8, commentWaitMs: 5200 },
   }
   return presets[strength] || presets.standard
 }
@@ -577,23 +576,16 @@ const mediaPreviewKind = (value) => {
   if (/(?:\[?图片\]?|照片|photo|image)/i.test(text)) return 'image'
   if (/(?:\[?动图\]?|GIF)/i.test(text)) return 'gif'
   if (/(?:\[?表情\]?|表情包|emoji)/i.test(text)) return 'sticker'
-  if (/(?:分享(?:了)?(?:链接|商品|直播|音乐|作品)|分享\[评论\]|\[分享\])/i.test(text)) return 'share'
+  if (/(?:分享(?:了)?(?:链接|商品|直播|音乐|作品)|\[分享\])/i.test(text)) return 'share'
   return ''
 }
-const isBracketedStickerPreview = (value) => {
-  const text = String(value || '').trim()
-  if (!/^\[[^\]\r\n]{1,16}\]$/.test(text)) return false
-  return !/^\[(?:视频|图片|照片|图集|评论|分享|商品|直播|音乐|作品|媒体|动图|GIF)\]$/i.test(text)
-}
-const hasWeakSelfDirectionPreview = (value) => mediaPreviewKind(value) === 'sticker' || isBracketedStickerPreview(value)
 
 const normalizeCapturedMedia = (value, hintedKind = '') => {
   const source = value && typeof value === 'object' ? value : {}
-  const maxFrames = Math.max(1, Math.min(8, Math.floor(Number(source.maxFrames || 3) || 3)))
   const frames = (Array.isArray(value) ? value : Array.isArray(source.frames) ? source.frames : [])
     .map((frame) => String(frame || '').trim())
     .filter((frame) => /^data:image\/(?:jpeg|png|webp);base64,/i.test(frame) || /^https?:\/\//i.test(frame))
-    .slice(0, maxFrames)
+    .slice(0, 3)
   const mediaKind = String(source.mediaKind || hintedKind || (source.detectedVideo ? 'video' : frames.length ? 'media' : '') || '')
   const decodedVideoFrames = Math.max(0, Math.floor(Number(source.decodedVideoFrames || 0) || 0))
   const detectedVideo = Boolean(source.detectedVideo || mediaKind === 'video')
@@ -604,8 +596,6 @@ const normalizeCapturedMedia = (value, hintedKind = '') => {
   const commentContext = normalizeCommentContext(source, source.videoComments?.length || 0)
   return {
     frames,
-    maxFrames,
-    frameDetail: ['low', 'auto', 'high'].includes(String(source.frameDetail || '')) ? String(source.frameDetail) : 'low',
     mediaKind,
     detectedVideo,
     videoReady,
@@ -622,17 +612,6 @@ const normalizeCapturedMedia = (value, hintedKind = '') => {
     confidence,
     reason: String(source.reason || ''),
   }
-}
-
-const modelMediaRect = (rect, options = {}) => {
-  const source = rect && typeof rect === 'object' ? rect : {}
-  const x = Math.max(0, Math.floor(Number(source.x || 0) || 0))
-  const y = Math.max(0, Math.floor(Number(source.y || 0) || 0))
-  const width = Math.max(1, Math.ceil(Number(source.width || 1) || 1))
-  const height = Math.max(1, Math.ceil(Number(source.height || 1) || 1))
-  const stripBottom = options.stripBottom === false ? 0 : Math.min(34, Math.max(0, Math.floor(height * 0.16)))
-  const stripLeft = Math.max(0, Math.floor(Number(options.stripLeft || 0) || 0))
-  return { x: x + stripLeft, y, width: Math.max(1, width - stripLeft), height: Math.max(1, height - stripBottom) }
 }
 
 function extractConversationPreview(lines, explicitPreview = '', explicitStreak = '') {
@@ -672,46 +651,50 @@ function mergeMessageHistory(previous, visible) {
   return [...oldMessages, ...newMessages.slice(overlap)].slice(-80)
 }
 
-// 共享编辑器选择器（带多级兜底，应对抖音随机 class 名变化）
-const EDITOR_SELECTOR = `[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder], [class*="chat" i] [contenteditable="true"], [class*="message" i] [contenteditable="true"], [contenteditable="true"]`
+const EDITOR_SELECTOR = `[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder], [class*="chat" i] [contenteditable="true"], [class*="message" i] [contenteditable="true"], textarea[placeholder], [contenteditable="true"]`
 
-// 发送按钮查找策略（多级兜底）
-const FIND_SEND_BUTTON_JS = `(() => {
-  const trySelectors = () => {
-    const btn = document.querySelector('.e2e-send-msg-btn, [class*="messageMsgInputpublishBtn"], [class*="send" i], [class*="publish" i][role="button"], [class*="submit" i], [aria-label*="发送" i], [title*="发送" i]')
-    if (btn) return btn
-    return null
+const FIND_SEND_TARGET_JS = `(() => {
+  const editorSelector = ${JSON.stringify(EDITOR_SELECTOR)}
+  const visible = (node) => {
+    if (!node) return false
+    const rect = node.getBoundingClientRect()
+    const style = getComputedStyle(node)
+    return rect.width >= 16 && rect.height >= 16 && rect.bottom > 0 && rect.top < innerHeight && style.visibility !== 'hidden' && style.display !== 'none' && node.getAttribute('aria-disabled') !== 'true' && !node.disabled
   }
-  const tryNearEditor = () => {
-    const editor = document.querySelector('${EDITOR_SELECTOR}')
-    if (!editor) return null
-    const container = editor.closest('[class*="editor" i], [class*="input" i], [class*="message" i]') || editor.parentElement
-    const root = container?.parentElement
-    if (!root) return null
-    const buttons = [...root.querySelectorAll('button, [role="button"]')].filter(b => {
-      if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false
-      const r = b.getBoundingClientRect()
-      return r.width > 20 && r.height > 20 && r.top > 0
-    })
-    if (!buttons.length) return null
-    // 最右边的按钮通常是发送按钮
-    return buttons.reduce((a, b) => {
-      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
-      return rb.right > ra.right ? b : a
-    })
+  const center = (node) => {
+    const rect = node.getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), rect }
   }
-  const tryEnterKey = () => {
-    const editor = document.querySelector('${EDITOR_SELECTOR}')
-    if (!editor) return 'ENTER_SEND'
-    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
-    editor.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
-    return 'ENTER_SENT'
+  const editor = document.querySelector(editorSelector)
+  const editorRect = editor?.getBoundingClientRect?.()
+  const known = [...document.querySelectorAll('.e2e-send-msg-btn, [class*="messageMsgInputpublishBtn"], [class*="send" i], [class*="publish" i], [aria-label*="发送"], [title*="发送"]')].find(visible)
+  if (known) return center(known)
+
+  if (editorRect) {
+    const candidates = [...document.querySelectorAll('button, [role="button"], [aria-label], [title], svg, div, span')]
+      .map((node) => {
+        let target = node.closest('button, [role="button"], [aria-label], [title]') || node
+        for (let depth = 0; target && depth < 4 && !visible(target); depth += 1) target = target.parentElement
+        if (!visible(target)) return null
+        const rect = target.getBoundingClientRect()
+        const text = [target.innerText, target.getAttribute('aria-label'), target.getAttribute('title'), target.className].join(' ')
+        const overlapsEditor = rect.bottom >= editorRect.top - 24 && rect.top <= editorRect.bottom + 24
+        const rightOfEditor = rect.left >= editorRect.left + Math.min(160, editorRect.width * 0.35)
+        const inBottomComposer = rect.top >= innerHeight - 140 && rect.right >= innerWidth - 240
+        const looksSend = /(发送|send|publish|submit|arrow|up)/i.test(text)
+        if (!overlapsEditor && !inBottomComposer && !looksSend) return null
+        if (/文件|表情|emoji|folder|image|attach|图片|相册/i.test(text)) return null
+        const score = (looksSend ? 60 : 0) + (rightOfEditor ? 30 : 0) + (inBottomComposer ? 30 : 0) + rect.right / 100
+        return { target, rect, score }
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score || right.rect.right - left.rect.right)
+    if (candidates[0]) return center(candidates[0].target)
+
+    return { x: Math.round(Math.min(innerWidth - 36, Math.max(editorRect.right + 36, innerWidth - 64))), y: Math.round(editorRect.top + editorRect.height / 2), fallback: 'editor-right-coordinate' }
   }
-  let btn = trySelectors()
-  if (btn) return btn
-  btn = tryNearEditor()
-  if (btn) return btn
-  return tryEnterKey()
+
+  return null
 })()`
 
 class DouyinService {
@@ -731,23 +714,7 @@ class DouyinService {
     savedSeen.forEach(p => this.lastSeen.set(p.name, p.preview))
     const savedPairs = (this.storage?.get().lastSentPairs || []).filter(p => Date.now() - p.at < 86400000)
     this.lastSent = new Map(savedPairs.map(p => [p.name, p.text]))
-    this.lastSentAt = new Map(savedPairs.map(p => [p.name, Number(p.at) || 0]))
     this.lastReplyTime = new Map()
-    this.mediaCache = new Map() // key=videoUrl|shareUrl, value={result, expiresAt}
-  }
-
-  rememberSelfPreview(name, text, { seen = false, persist = false } = {}) {
-    const target = String(name || '').trim()
-    const preview = String(text || '').trim()
-    if (!target || !preview) return
-    const sentAt = Date.now()
-    this.lastSent.set(target, preview)
-    this.lastSentAt.set(target, sentAt)
-    if (seen) this.lastSeen.set(target, preview)
-    if (persist) {
-      const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: this.lastSentAt.get(n) || sentAt }))
-      this.storage.update({ lastSentPairs: pairs })
-    }
   }
 
   findFfmpegPath() {
@@ -967,7 +934,6 @@ class DouyinService {
     if (this.window && !this.window.isDestroyed()) await this.window.loadURL(CHAT_URL)
     this.lastSeen.clear()
     this.lastSent.clear()
-    this.lastSentAt.clear()
     this.emitEvent('status', await this.getStatus())
     return { ok: true }
   }
@@ -992,7 +958,7 @@ class DouyinService {
     if (!win.webContents.getURL().startsWith('https://www.douyin.com/chat')) await win.loadURL(CHAT_URL)
     const started = Date.now()
     while (Date.now() - started < timeout) {
-      const ready = await win.webContents.executeJavaScript(`Boolean(document.querySelector('[class*="conversationConversationListwrapper"], [class*="messageEditorimChatEditorContainer"]') || document.querySelector('${EDITOR_SELECTOR}'))`).catch(() => false)
+      const ready = await win.webContents.executeJavaScript(`Boolean(document.querySelector('[class*="conversationConversationListwrapper"], [class*="messageEditorimChatEditorContainer"]'))`).catch(() => false)
       if (ready) return win
       await sleep(700)
     }
@@ -1002,7 +968,7 @@ class DouyinService {
   async syncContacts() {
     const win = await this.waitForChatReady()
     const contacts = await win.webContents.executeJavaScript(`(() => {
-      const wrapper = document.querySelector('[class*="conversationConversationListwrapper"], [class*="conversationList" i], [class*="conversationlist" i]')
+      const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
       if (!wrapper) return []
       const extractConversationPreview = ${extractConversationPreview.toString()}
       const CONVERSATION_TIME_RE = ${CONVERSATION_TIME_RE.toString()}
@@ -1047,9 +1013,9 @@ class DouyinService {
     const win = await this.waitForChatReady()
     const point = await win.webContents.executeJavaScript(`(() => {
       const target = ${JSON.stringify(name)}
-            const wrapper = document.querySelector('[class*="conversationConversationListwrapper"], [class*="conversationList" i], [class*="conversationlist" i]')
+      const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
       if (!wrapper) return null
-      const rows = [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"], [class*="conversationItem" i], [class*="conversationitem" i], [class*="listItem" i]')]
+      const rows = [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"]')]
       const row = rows.find(node => ((node.innerText || '').split(/\\n+/)[0] || '').trim() === target)
         || rows.find(node => (node.innerText || '').includes(target))
       if (!row) return null
@@ -1064,7 +1030,7 @@ class DouyinService {
     let usedDomFallback = false
     while (Date.now() - started < 5000) {
       const selected = await win.webContents.executeJavaScript(`(() => {
-        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
         return Boolean(editor && !document.querySelector('[class*="RightPanelEmpty"]'))
       })()`).catch(() => false)
       if (selected) return win
@@ -1072,7 +1038,7 @@ class DouyinService {
         usedDomFallback = true
         await win.webContents.executeJavaScript(`(() => {
           const target = ${JSON.stringify(name)}
-          const rows = [...document.querySelectorAll('[class*="conversationConversationItemwrapper"], [class*="conversationItem" i], [class*="conversationitem" i], [class*="listItem" i]')]
+          const rows = [...document.querySelectorAll('[class*="conversationConversationItemwrapper"]')]
           const row = rows.find(node => ((node.innerText || '').split(/\\n+/)[0] || '').trim() === target)
           if (!row) return false
           row.click()
@@ -1089,52 +1055,14 @@ class DouyinService {
   // <img> or <video> alone can capture an avatar or a sticker instead.
   async captureLatestIncomingMedia(name, recognitionOptions = {}) {
     const recognition = { ...videoRecognitionOptions(this.storage.get().settings || {}), ...(recognitionOptions || {}) }
-    const maxFrames = Math.max(1, Math.min(8, Math.floor(Number(recognition.maxFrames || 4) || 4)))
-    const imageMaxSize = Math.max(448, Math.min(1280, Math.floor(Number(recognition.imageMaxSize || 768) || 768)))
-    const jpegQuality = Math.max(48, Math.min(78, Math.floor(Number(recognition.jpegQuality || 64) || 64)))
+    const maxFrames = Math.max(1, Math.min(3, Math.floor(Number(recognition.maxFrames || 3) || 3)))
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
     const media = await win.webContents.executeJavaScript(`(() => {
       document.querySelectorAll('[data-xusheng-media-capture]').forEach((node) => node.removeAttribute('data-xusheng-media-capture'))
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
       const selector = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"]'
-      const visible = (target) => {
-        if (!target) return false
-        const rect = target.getBoundingClientRect()
-        const style = getComputedStyle(target)
-        return rect.width >= 36 && rect.height >= 36 && rect.bottom > 0 && rect.top < innerHeight && style.visibility !== 'hidden' && style.display !== 'none'
-      }
-      const mediaText = (target) => {
-        let text = ''
-        for (let parent = target; parent && parent !== document.body; parent = parent.parentElement) {
-          text += ' ' + String(parent.innerText || '').slice(0, 180)
-          if (/(来自视频|分享\s*@|的评论|视频|播放)/i.test(text)) break
-        }
-        return text.replace(/\s+/g, ' ').trim()
-      }
-      const mediaSignature = (target) => {
-        let signature = ''
-        for (let parent = target, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) signature += ' ' + String(parent.className || '') + ' ' + String(parent.getAttribute?.('aria-label') || '')
-        return signature
-      }
-      const mediaCandidates = (node) => [...node.querySelectorAll('video, img, [style*="background-image"], [class*="video" i], [class*="player" i], [class*="play" i], [class*="image" i], [class*="photo" i], [class*="picture" i], [class*="card" i]')]
-        .map((mediaNode, index) => {
-          if (!visible(mediaNode)) return null
-          const rect = mediaNode.getBoundingClientRect()
-          const signature = mediaSignature(mediaNode)
-          const text = mediaText(mediaNode)
-          if (/avatar|userhead|headimage|profilephoto/i.test(signature) || rect.width < 64 || rect.height < 48) return null
-          const score = (mediaNode.tagName === 'VIDEO' ? 80 : 0)
-            + (/(video|player|play)/i.test(signature) ? 42 : 0)
-            + (/(来自视频|视频|播放)/i.test(text) ? 36 : 0)
-            + (/(分享\s*@|的评论)/i.test(String(node.innerText || '')) && rect.top > node.getBoundingClientRect().top + node.getBoundingClientRect().height * 0.45 ? 22 : 0)
-            + Math.min(18, Math.round((rect.width * rect.height) / 12000))
-            - index
-          return { node: mediaNode, rect, score, text, signature }
-        })
-        .filter(Boolean)
-        .sort((left, right) => right.score - left.score)
       const all = [...document.querySelectorAll(selector)]
       const rows = all.filter((node) => !all.some((parent) => parent !== node && parent.contains(node)))
         .map((node) => {
@@ -1143,8 +1071,7 @@ class DouyinService {
           for (let parent = node, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) signature += ' ' + String(parent.className || '')
           const selfByClass = /MessageItemTextisFromMe|isFromMe|(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(signature)
           const contactByClass = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(signature)
-          const primaryMedia = mediaCandidates(node)[0]
-          const mediaNode = primaryMedia?.node
+          const mediaNode = node.querySelector('video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]')
           if (!mediaNode || !rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
           const mediaRect = mediaNode.getBoundingClientRect()
           const center = mediaRect.left + mediaRect.width / 2
@@ -1170,14 +1097,6 @@ class DouyinService {
       const rect = selected.node.getBoundingClientRect()
       const videoAfterScroll = selected.node.querySelector('video')
       const videoRectAfterScroll = videoAfterScroll?.getBoundingClientRect()
-      const primaryAfterScroll = mediaCandidates(selected.node)[0]
-      const primaryRectAfterScroll = primaryAfterScroll?.rect
-      const clipped = (targetRect, padding = 0) => targetRect ? {
-        x: Math.max(0, Math.floor(targetRect.x - padding)),
-        y: Math.max(0, Math.floor(targetRect.y - padding)),
-        width: Math.max(1, Math.ceil(Math.min(targetRect.right + padding, innerWidth) - Math.max(0, targetRect.x - padding))),
-        height: Math.max(1, Math.ceil(Math.min(targetRect.bottom + padding, innerHeight) - Math.max(0, targetRect.y - padding))),
-      } : null
       return {
         isVideo: Boolean(videoAfterScroll || selected.videoCandidate),
         duration: videoAfterScroll && Number.isFinite(videoAfterScroll.duration) ? videoAfterScroll.duration : 0,
@@ -1185,31 +1104,30 @@ class DouyinService {
         shareUrl: /^https?:\\/\\//i.test(selected.shareUrl || '') ? selected.shareUrl : '',
         shareTitle: selected.shareTitle || '',
         posterUrl: /^https?:\\/\\//i.test(selected.poster || '') ? selected.poster : '',
-        videoRect: clipped(videoRectAfterScroll),
-        primaryRect: clipped(primaryRectAfterScroll),
-        rect: clipped(rect, 8),
+        videoRect: videoRectAfterScroll ? {
+          x: Math.max(0, Math.floor(videoRectAfterScroll.x)),
+          y: Math.max(0, Math.floor(videoRectAfterScroll.y)),
+          width: Math.max(1, Math.ceil(Math.min(videoRectAfterScroll.right, innerWidth) - Math.max(0, videoRectAfterScroll.x))),
+          height: Math.max(1, Math.ceil(Math.min(videoRectAfterScroll.bottom, innerHeight) - Math.max(0, videoRectAfterScroll.y))),
+        } : null,
+        rect: {
+          x: Math.max(0, Math.floor(rect.x - 8)),
+          y: Math.max(0, Math.floor(rect.y - 8)),
+          width: Math.max(1, Math.ceil(Math.min(rect.right + 8, innerWidth) - Math.max(0, rect.x - 8))),
+          height: Math.max(1, Math.ceil(Math.min(rect.bottom + 8, innerHeight) - Math.max(0, rect.y - 8))),
+        },
       }
     })()`).catch(() => null)
-    // 视频去重缓存：相同视频链接在 30 分钟内跳过重复捕获
-    const cacheKey = media?.videoUrl || media?.shareUrl || ''
-    if (cacheKey && this.mediaCache.has(cacheKey)) {
-      const cached = this.mediaCache.get(cacheKey)
-      if (cached && cached.expiresAt > Date.now()) {
-        this.log('media_cache_hit', `Skipped re-capturing video for ${name}, using cached frames`, { name, cacheKey })
-        return cached.result
-      }
-      this.mediaCache.delete(cacheKey)
-    }
     if (!media?.rect?.width || !media?.rect?.height) return normalizeCapturedMedia({ frames: [], mediaKind: 'media', confidence: 'none', reason: 'no_visible_media_bubble' })
     const frames = []
-    const capture = async (rect = media.rect, options = {}) => {
-      const image = await win.webContents.capturePage(modelMediaRect(rect, options))
+    const capture = async (rect = media.rect) => {
+      const image = await win.webContents.capturePage(rect)
       if (image.isEmpty()) return
       const size = image.getSize()
-      const scale = Math.min(1, imageMaxSize / size.width, imageMaxSize / size.height)
+      const scale = Math.min(1, 640 / size.width, 640 / size.height)
       const resized = scale < 1 ? image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' }) : image
-      const frame = `data:image/jpeg;base64,${resized.toJPEG(jpegQuality).toString('base64')}`
-      if (frame.length <= 420_000 && !frames.includes(frame)) frames.push(frame)
+      const frame = `data:image/jpeg;base64,${resized.toJPEG(58).toString('base64')}`
+      if (frame.length <= 220_000 && !frames.includes(frame)) frames.push(frame)
     }
     const seek = async (ratio) => win.webContents.executeJavaScript(`new Promise((resolve) => {
       const video = document.querySelector('[data-xusheng-media-capture="latest"] video')
@@ -1233,73 +1151,29 @@ class DouyinService {
       video.addEventListener('loadedmetadata', ready, { once: true })
       setTimeout(() => { video.removeEventListener('loadedmetadata', ready); seekNow() }, 2500)
     })`).catch(() => false)
-
-    const probeVideoDuration = async () => win.webContents.executeJavaScript(`new Promise((resolve) => {
-      const video = document.querySelector('[data-xusheng-media-capture="latest"] video')
-      if (!video) return resolve(0)
-      if (Number.isFinite(video.duration) && video.duration > 0 && video.readyState >= 1) return resolve(video.duration)
-      const ready = () => { video.removeEventListener('loadedmetadata', ready); resolve(video.duration || 0) }
-      video.addEventListener('loadedmetadata', ready, { once: true })
-      const source = video.currentSrc || video.src || video.querySelector('source')?.src || ''
-      if (source) try { video.src = source; video.load() } catch {}
-      setTimeout(() => { video.removeEventListener('loadedmetadata', ready); resolve(0) }, 3500)
-    })`).catch(() => 0)
-
-    // 基于视频时长动态计算 seek 比例，让帧分布更合理
-    const computeSeekRatios = (duration, frameCount) => {
-      const count = Math.max(0, frameCount)
-      if (!count) return []
-      const ratios = []
-      if (duration <= 0 || duration >= 600) {
-        // 无法获知时长或超长视频，用均匀分布
-        for (let i = 0; i < count; i++) ratios.push((i + 1) / (count + 1))
-      } else if (duration < 10) {
-        // 极短视频：密集采样中间段
-        for (let i = 0; i < count; i++) ratios.push(0.1 + (i / Math.max(1, count - 1)) * 0.8)
-      } else if (duration < 30) {
-        // 短视频：覆盖 5%-92%
-        for (let i = 0; i < count; i++) ratios.push(0.05 + (i / Math.max(1, count - 1)) * 0.87)
-      } else if (duration < 120) {
-        // 中等视频：更宽覆盖
-        for (let i = 0; i < count; i++) ratios.push(0.05 + (i / Math.max(1, count - 1)) * 0.9)
-      } else {
-        // 长视频：偏重前中段
-        for (let i = 0; i < count; i++) {
-          const t = i / Math.max(1, count - 1)
-          ratios.push(0.03 + (t < 0.5 ? t * 0.7 : 0.35 + (t - 0.5) * 0.58))
-        }
-      }
-      return ratios.map((r) => Math.round(r * 100) / 100)
-    }
-
     let decodedVideoFrames = 0
     if (media.isVideo) {
-      await capture(media.primaryRect || media.videoRect || media.rect, { stripLeft: 80 })
-      const videoDuration = await probeVideoDuration()
-      const seekCount = Math.max(0, Math.min(maxFrames - 1, maxFrames >= 9 ? 7 : maxFrames >= 5 ? 4 : maxFrames > 1 ? 1 : 0))
-      const ratios = seekCount ? computeSeekRatios(videoDuration, seekCount) : []
-      for (const ratio of ratios) {
+      await capture(media.rect)
+      for (const ratio of (maxFrames > 2 ? [0.2, 0.68] : maxFrames > 1 ? [0.5] : [])) {
         if (await seek(ratio)) {
-          await capture(media.videoRect || media.primaryRect || media.rect, { stripLeft: 80 })
+          await capture(media.videoRect || media.rect)
           decodedVideoFrames += 1
         }
       }
     } else {
-      await capture(media.primaryRect || media.rect)
+      await capture()
     }
     // A poster URL is often the cleanest key frame for a Douyin share card.
     // Keep the full video URL out of model payloads because standard
     // OpenAI-compatible chat endpoints do not accept video_url parts.
-    if (media.posterUrl && frames.length < maxFrames && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
-    this.log('media_captured', `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: Boolean(media.posterUrl), strength: recognition.strength || 'standard', frameDetail: recognition.frameDetail || 'auto' })
+    if (media.posterUrl && frames.length < 3 && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
+    this.log('media_captured', `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: Boolean(media.posterUrl), strength: recognition.strength || 'standard' })
     const [audioMeta, commentMeta] = await Promise.all([
       recognition.audio === false ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
       this.readVideoCommentContext(media, name, recognition),
     ])
     const result = normalizeCapturedMedia({
       frames: frames.slice(0, maxFrames),
-      maxFrames,
-      frameDetail: recognition.frameDetail || 'auto',
       mediaKind: media.isVideo ? 'video' : 'media',
       detectedVideo: media.isVideo,
       videoReady: media.isVideo && decodedVideoFrames > 0,
@@ -1314,15 +1188,6 @@ class DouyinService {
       ...commentMeta,
       ...audioMeta,
     })
-    // 写入视频去重缓存（30 分钟 TTL）
-    if (cacheKey && result.frames.length) {
-      this.mediaCache.set(cacheKey, { result, expiresAt: Date.now() + 30 * 60 * 1000 })
-      // 限制缓存大小防止内存泄漏
-      if (this.mediaCache.size > 50) {
-        const oldest = [...this.mediaCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)[0]
-        if (oldest) this.mediaCache.delete(oldest[0])
-      }
-    }
     return result
   }
 
@@ -1331,7 +1196,7 @@ class DouyinService {
     await this.waitForEditor(win)
     const media = await win.webContents.executeJavaScript(`(() => {
       document.querySelectorAll('[data-xusheng-video-capture]').forEach((node) => node.removeAttribute('data-xusheng-video-capture'))
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
       const candidates = [...document.querySelectorAll('video, img, [style*="background-image"]')].map((node) => {
         const rect = node.getBoundingClientRect()
@@ -1403,7 +1268,7 @@ class DouyinService {
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
     const visibleMessages = await win.webContents.executeJavaScript(`(() => {
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
       const primary = [...document.querySelectorAll('[class*="MessageItemTextcontainer"]')]
       const candidates = primary.length ? primary : [...document.querySelectorAll('[class*="messageItem"], [data-e2e*="message-item"]')]
@@ -1453,7 +1318,7 @@ class DouyinService {
   async captureVisibleMessages(win) {
     if (!win || win.isDestroyed?.()) return []
     return win.webContents.executeJavaScript(`(() => {
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
       const primary = [...document.querySelectorAll('[class*="MessageItemTextcontainer"]')]
       const candidates = primary.length ? primary : [...document.querySelectorAll('[class*="messageItem"], [data-e2e*="message-item"]')]
@@ -1567,21 +1432,11 @@ class DouyinService {
       text: (() => { const editor = document.querySelector('${EDITOR_SELECTOR}'); return editor ? ('value' in editor ? editor.value : editor.innerText) : '' })(),
     }))()`).catch((error) => { throw new Error(`发送前读取输入框失败：${error.message}`) })
     if (!normalizeEditorText(before.text)) throw new Error('Cannot send an empty message')
-    const sendResult = await win.webContents.executeJavaScript(`(() => {
-      const result = ${FIND_SEND_BUTTON_JS}
-      if (typeof result === 'string') return result
-      const rect = result.getBoundingClientRect()
-      return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }
-    })()`).catch((error) => { throw new Error(`点击发送按钮失败：${error.message}`) })
-    if (sendResult === 'ENTER_SENT') {
-      // Enter 按键发送成功，等待确认
-    } else if (sendResult && typeof sendResult.x === 'number') {
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: sendResult.x, y: sendResult.y })
-      win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: sendResult.x, y: sendResult.y })
-      win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: sendResult.x, y: sendResult.y })
-    } else {
-      throw new Error('Could not find the send button or trigger send')
-    }
+    const point = await win.webContents.executeJavaScript(FIND_SEND_TARGET_JS).catch((error) => { throw new Error(`点击发送按钮失败：${error.message}`) })
+    if (!point) throw new Error('Could not find the send button')
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
+    win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
+    win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
     // Douyin usually clears the editor quickly after a successful send. Poll so
     // fast sends return immediately while still allowing slow acknowledgements.
     const started = Date.now()
@@ -1593,7 +1448,7 @@ class DouyinService {
       }))()`).catch((error) => { throw new Error(`发送后读取输入框失败：${error.message}`) })
       if (!normalizeEditorText(after.text)) return
     }
-    throw new Error('Douyin did not confirm the message was sent')
+    throw new Error(`Douyin did not confirm the message was sent; send point=(${point.x}, ${point.y})`)
   }
 
   async sendEmoji(name, emojiName = '\u65e9\u4e0a\u597d') {
@@ -1622,8 +1477,6 @@ class DouyinService {
       return true
     })()`)
     if (!clicked) throw new Error(`没有找到“${emojiName}”表情包`)
-    const emojiPreview = `[${emojiName}]`
-    this.rememberSelfPreview(name, emojiPreview)
     const started = Date.now()
     let sent = false
     while (Date.now() - started < 4000) {
@@ -1636,8 +1489,10 @@ class DouyinService {
       await sleep(250)
     }
     if (!sent) throw new Error(`Douyin did not confirm emoji "${emojiName}" was sent`)
+    this.lastSent.set(name, `[${emojiName}]`)
     this.lastReplyTime.set(name, Date.now())
-    this.rememberSelfPreview(name, emojiPreview, { seen: true, persist: true })
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
+    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'emoji')
     this.log('message_sent', `Sent emoji "${emojiName}" to ${name}`, { name, emoji: emojiName })
     return { ok: true, kind: 'emoji', emojiName }
@@ -1767,50 +1622,182 @@ class DouyinService {
     if (!target || !/^https?:\/\//i.test(url)) throw new Error('联系人和视频链接不能为空')
     this.assertCanSend(target)
 
-    // 直接在聊天窗口粘贴链接发送，就像真人复制链接分享一样
-    const messageParts = []
-    if (String(caption || '').trim()) messageParts.push(String(caption).trim().slice(0, 120))
-    messageParts.push(url)
-    const messageText = messageParts.join('\n')
+    const win = this.ensureDiscoveryWindow()
+    const shouldHideDiscoveryWindow = !win.isVisible()
+    if (shouldHideDiscoveryWindow) win.showInactive()
+    try {
+    await win.loadURL(url)
+    await sleep(3500)
 
-    const chat = await this.selectConversation(target)
-    await this.waitForEditor(chat)
+    const shareButton = await this.waitForPagePoint(win, `(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect()
+        const style = getComputedStyle(node)
+        return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const nodes = [...document.querySelectorAll('button, [role="button"], a, [aria-label], [title], [class*="share" i], [data-e2e*="share" i]')]
+      const candidates = nodes.map((node) => {
+        const text = normalize([node.innerText, node.getAttribute('aria-label'), node.getAttribute('title'), node.className, node.getAttribute('data-e2e')].join(' '))
+        if (!visible(node) || !/(分享|转发|share)/i.test(text) || /(评论|收藏|点赞|搜索|复制|链接)/.test(text)) return null
+        const clickTarget = node.closest('button, [role="button"], a') || node
+        const rect = clickTarget.getBoundingClientRect()
+        const score = (/分享/.test(text) ? 5 : 0) + (/share/i.test(text) ? 3 : 0) + (clickTarget.tagName === 'BUTTON' ? 2 : 0)
+        return { node: clickTarget, rect, score }
+      }).filter(Boolean).sort((left, right) => right.score - left.score)
+      const selected = candidates[0]
+      if (!selected) return null
+      return { x: Math.round(selected.rect.left + selected.rect.width / 2), y: Math.round(selected.rect.top + selected.rect.height / 2) }
+    })()`, 'Could not find the Douyin video share button')
+    await this.clickPagePoint(win, shareButton, 'Could not find the Douyin video share button')
+    await sleep(900)
 
-    const written = await chat.webContents.executeJavaScript(`(() => {
-      const value = ${JSON.stringify(messageText)}
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
-      if (!editor || editor.disabled || editor.getAttribute('aria-disabled') === 'true') return false
-      editor.focus()
-      if ('value' in editor) {
-        editor.value = value
+    const friendTarget = await this.waitForPagePoint(win, `(() => {
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect()
+        const style = getComputedStyle(node)
+        return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const nodes = [...document.querySelectorAll('button, [role="button"], a, div, span')]
+      const candidates = nodes.map((node) => {
+        const text = normalize([node.innerText, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '))
+        if (!visible(node) || !/(私信|朋友|好友|联系人|发给朋友|分享给朋友|发送给朋友|抖音好友)/.test(text) || /(复制|链接|微信|QQ|微博|下载|举报|保存|更多)/i.test(text)) return null
+        const clickTarget = node.closest('button, [role="button"], a') || node
+        const rect = clickTarget.getBoundingClientRect()
+        const score = (/私信|发给朋友|发送给朋友/.test(text) ? 8 : 0) + (/朋友|好友/.test(text) ? 4 : 0)
+        return { node: clickTarget, rect, score }
+      }).filter(Boolean).sort((left, right) => right.score - left.score)
+      const selected = candidates[0]
+      if (!selected) return null
+      return { x: Math.round(selected.rect.left + selected.rect.width / 2), y: Math.round(selected.rect.top + selected.rect.height / 2) }
+    })()`, 'Could not find the share-to-friends entry')
+    await this.clickPagePoint(win, friendTarget, 'Could not find the share-to-friends entry')
+    await sleep(700)
+
+    await win.webContents.executeJavaScript(`(() => {
+      const target = ${JSON.stringify(target)}
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect()
+        const style = getComputedStyle(node)
+        return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const fields = [...document.querySelectorAll('input, textarea, [contenteditable="true"]')]
+        .filter(visible)
+        .map((node) => {
+          const text = [node.getAttribute('placeholder'), node.getAttribute('aria-label'), node.getAttribute('data-placeholder'), node.className].join(' ')
+          const score = /搜索|好友|联系人|朋友|收件人/.test(text) ? 10 : 1
+          return { node, score }
+        })
+        .sort((left, right) => right.score - left.score)
+      const field = fields[0]?.node
+      if (!field) return false
+      field.focus()
+      if ('value' in field) {
+        field.value = target
       } else {
         const selection = window.getSelection()
-        selection.removeAllRanges()
         const range = document.createRange()
-        range.selectNodeContents(editor)
+        range.selectNodeContents(field)
+        selection.removeAllRanges()
         selection.addRange(range)
-        if (!document.execCommand('insertText', false, value)) editor.textContent = value
+        if (!document.execCommand('insertText', false, target)) field.textContent = target
       }
-      editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }))
+      field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: target }))
+      field.dispatchEvent(new Event('change', { bubbles: true }))
       return true
     })()`).catch(() => false)
-    if (!written) {
-      chat.webContents.focus()
-      await chat.webContents.insertText(messageText)
-      await sleep(200)
+    await sleep(900)
+
+    const contactPoint = await this.waitForPagePoint(win, `(() => {
+      const target = ${JSON.stringify(target)}
+      const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect()
+        const style = getComputedStyle(node)
+        return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'
+      }
+      const nodes = [...document.querySelectorAll('button, [role="button"], li, label, div, span')]
+      const candidates = nodes.map((node) => {
+        const text = normalize([node.innerText, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '))
+        if (!visible(node) || !text.includes(target) || /(搜索|取消|发送|分享|已选择)/.test(text)) return null
+        const clickTarget = node.closest('button, [role="button"], li, label') || node
+        const rect = clickTarget.getBoundingClientRect()
+        const score = text === target ? 10 : text.startsWith(target) ? 6 : 2
+        return { node: clickTarget, rect, score }
+      }).filter(Boolean).sort((left, right) => right.score - left.score)
+      const selected = candidates[0]
+      if (!selected) return null
+      return { x: Math.round(selected.rect.left + selected.rect.width / 2), y: Math.round(selected.rect.top + selected.rect.height / 2) }
+    })()`, `Could not find contact "${target}" in the share panel`)
+    await this.clickPagePoint(win, contactPoint, `Could not find contact "${target}" in the share panel`)
+    await sleep(700)
+
+    if (String(caption || '').trim()) {
+      await win.webContents.executeJavaScript(`(() => {
+        const caption = ${JSON.stringify(String(caption || '').trim().slice(0, 120))}
+        const visible = (node) => {
+          const rect = node.getBoundingClientRect()
+          const style = getComputedStyle(node)
+          return rect.width > 8 && rect.height > 8 && style.visibility !== 'hidden' && style.display !== 'none'
+        }
+        const fields = [...document.querySelectorAll('textarea, input, [contenteditable="true"]')]
+          .filter(visible)
+          .map((node) => {
+            const text = [node.getAttribute('placeholder'), node.getAttribute('aria-label'), node.getAttribute('data-placeholder'), node.className].join(' ')
+            const score = /留言|说点|附言|消息|comment/i.test(text) ? 10 : 0
+            return { node, score }
+          })
+          .filter((item) => item.score > 0)
+          .sort((left, right) => right.score - left.score)
+        const field = fields[0]?.node
+        if (!field) return false
+        field.focus()
+        if ('value' in field) field.value = caption
+        else {
+          if (!document.execCommand('insertText', false, caption)) field.textContent = caption
+        }
+        field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: caption }))
+        return true
+      })()`).catch(() => false)
+      await sleep(300)
     }
 
-    await this.sendCurrentInput(chat)
+
+    const sendPoint = await this.waitForPagePoint(win, FIND_SEND_TARGET_JS, 'Could not find the video share send button')
+    await this.clickPagePoint(win, sendPoint, 'Could not find the video share send button')
+    await sleep(3000)
+
+    const confirmed = await win.webContents.executeJavaScript(`(() => {
+      const text = document.body?.innerText || ''
+      if (/发送成功|已发送|分享成功/.test(text)) return true
+      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const current = editor ? ('value' in editor ? editor.value : editor.innerText) : ''
+      if (!String(current || '').trim()) return true
+      const openDialogs = [...document.querySelectorAll('[role="dialog"], [class*="modal" i], [class*="popover" i]')]
+        .filter((node) => {
+          const rect = node.getBoundingClientRect()
+          const style = getComputedStyle(node)
+          return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none'
+        })
+        .map((node) => node.innerText || '')
+      return !openDialogs.some((value) => /发送|分享|好友|朋友|私信/.test(value))
+    })()`).catch(() => true)
+    if (!confirmed) throw new Error(`Douyin did not confirm the video card was sent; send point=(${sendPoint.x}, ${sendPoint.y})`)
 
     const sentText = `[视频分享] ${video.title || video.note || video.url || ''}`.replace(/\s+/g, ' ').trim()
-    this.rememberSelfPreview(target, sentText, { seen: true })
+    this.lastSent.set(target, sentText)
+    this.lastSeen.set(target, sentText)
     this.lastReplyTime.set(target, Date.now())
-    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: this.lastSentAt.get(n) || Date.now() }))
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
     this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(target, 'videoShare')
     this.recordConversationMessage(target, 'me', sentText)
-    this.log('message_sent', `Shared a video link with ${target}`, { name: target, url, source: metadata.source || 'video_share', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
-    return { ok: true, kind: 'videoShare', card: false }
+    this.log('message_sent', `Shared a video card with ${target}`, { name: target, url, source: metadata.source || 'video_share', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
+    return { ok: true, kind: 'videoShare', card: true }
+    } finally {
+      if (shouldHideDiscoveryWindow && !win.isDestroyed()) win.hide()
+    }
   }
 
   async sendVideoShareTask(name, task) {
@@ -1989,7 +1976,7 @@ class DouyinService {
     await this.waitForEditor(win)
     const editorState = await win.webContents.executeJavaScript(`(() => {
       const value = ${JSON.stringify(String(text).trim())}
-      const editor = document.querySelector('${EDITOR_SELECTOR}')
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       if (!editor || editor.disabled || editor.getAttribute('aria-disabled') === 'true') return { ok: false }
       const current = 'value' in editor ? editor.value : editor.innerText
       const normalized = [...String(current || '')]
@@ -2026,7 +2013,7 @@ class DouyinService {
     }
     if (!editorState?.ok && !acceptedExistingDraft) {
       const focused = await win.webContents.executeJavaScript(`(() => {
-        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
         if (!editor || editor.disabled || editor.getAttribute('aria-disabled') === 'true') return false
         editor.focus()
         if ('select' in editor) editor.select()
@@ -2044,7 +2031,7 @@ class DouyinService {
         await sleep(150)
       }
       const inserted = await win.webContents.executeJavaScript(`(() => {
-        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
         const current = editor ? ('value' in editor ? editor.value : editor.innerText) : ''
         return [...String(current || '')].filter(character => ![0x200B, 0x200C, 0x200D, 0xFEFF].includes(character.charCodeAt(0))).join('').trim() === ${JSON.stringify(value)}
       })()`).catch(() => false)
@@ -2055,7 +2042,7 @@ class DouyinService {
     } catch (error) {
       await win.webContents.executeJavaScript(`(() => {
         const expected = ${JSON.stringify(value)}
-        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"]')
         const current = [...String(editor?.innerText || '')]
           .filter((character) => ![0x200B, 0x200C, 0x200D, 0xFEFF].includes(character.charCodeAt(0)))
           .join('').trim()
@@ -2069,9 +2056,10 @@ class DouyinService {
       throw error
     }
     const normalized = value.replace(/\s+/g, ' ').trim()
-    this.rememberSelfPreview(name, normalized, { seen: true })
+    this.lastSent.set(name, normalized)
+    this.lastSeen.set(name, normalized)
     this.lastReplyTime.set(name, Date.now())
-    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: this.lastSentAt.get(n) || Date.now() }))
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
     this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'text')
     this.recordConversationMessage(name, 'me', normalized)
@@ -2143,7 +2131,6 @@ class DouyinService {
     const state = this.storage.get()
     const config = state.automation || {}
     const settings = state.settings || {}
-    const autoReplyDraftOnly = settings.aiReplyDraftOnly === true
     if (settings.quietHours) {
       const toMinutes = (value) => {
         const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
@@ -2201,7 +2188,7 @@ class DouyinService {
           continue
         }
         if (previous === currentMessageKey && !reenabled) continue
-        if (!pendingInquiry && !autoReplyDraftOnly && !canSend(contact.name)) {
+        if (!pendingInquiry && !canSend(contact.name)) {
           const noticeKey = `${contact.name}:${localDateKey()}`
           if (!this.lastLimitNotice.has(noticeKey)) {
             this.lastLimitNotice.set(noticeKey, Date.now())
@@ -2211,18 +2198,9 @@ class DouyinService {
           // resets instead of being silently discarded.
           continue
         }
-        const mediaKind = mediaPreviewKind(contact.preview)
-        const weakSelfDirection = hasWeakSelfDirectionPreview(contact.preview)
-        const lastSentAt = Number(this.lastSentAt.get(contact.name) || 0)
-        const recentSelfPreview = lastSentAt && (Date.now() - lastSentAt) <= RECENT_SELF_PREVIEW_MS
-        const matchesOwnRecentSticker = weakSelfDirection && recentSelfPreview && normalizeEditorText(this.lastSent.get(contact.name)) === normalizeEditorText(contact.preview)
         // A positive list marker is useful, but its absence is not proof that
         // the latest message came from the contact. Verify in the chat view.
-        const fromMe = contact.fromMe === true || matchesOwnRecentSticker
-          ? true
-          : weakSelfDirection
-            ? false
-            : await this.isLastMessageFromMe(contact.name)
+        const fromMe = contact.fromMe === true ? true : await this.isLastMessageFromMe(contact.name)
         if (fromMe === true) {
           this.log('auto_skip', `${contact.name} 是自己发的，跳过`)
           this.lastSeen.set(contact.name, currentMessageKey)
@@ -2271,6 +2249,7 @@ class DouyinService {
             } catch (_) { /* 抓取完整消息失败，回退到预览文本 */ }
 
             let mediaCapture = normalizeCapturedMedia([])
+            const mediaKind = mediaPreviewKind(contact.preview)
             const isMedia = Boolean(mediaKind)
             if (isMedia) {
               if (settings.videoReplyEnabled === false || settings.videoRecognitionEnabled === false) {
@@ -2313,11 +2292,6 @@ class DouyinService {
               }
             }
             aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: conversationTimeMeta(contact), videoFrames: isMedia ? mediaCapture : undefined })
-            if (aiDraft?.skipped) {
-              this.lastSeen.set(contact.name, currentMessageKey)
-              this.log('ai_reply_skipped', `AI 判断当前不适合回复 ${contact.name}`, { name: contact.name, preview: contact.preview, model: aiDraft.model, provider: aiDraft.provider })
-              continue
-            }
             if (aiDraft?.ok && (aiDraft.labeledText || aiDraft.text)) {
               const model = aiDraft.model || this.storage.get().providers?.[0]?.model || '当前模型'
               const label = aiDraft.aiLabel || `AI · ${model}`
@@ -2335,11 +2309,6 @@ class DouyinService {
         if (replyText) {
           try {
             const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '', provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '', aiLabel: aiDraft?.aiLabel || `AI · ${aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型'}` } : { source: 'rule' }
-            if (autoReplyDraftOnly && !pendingInquiry) {
-              this.lastSeen.set(contact.name, currentMessageKey)
-              this.log('reply_drafted', `已为 ${contact.name} 生成建议回复：${replyText.slice(0, 80)}`, { name: contact.name, text: replyText, preview: contact.preview, ...aiMeta })
-              continue
-            }
             await this.sendMessage(contact.name, replyText, aiMeta)
             this.lastSeen.set(contact.name, currentMessageKey)
           } catch (error) {
@@ -2428,4 +2397,4 @@ class DouyinService {
   }
 }
 
-module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, videoShareDailyLimit, videoShareDiscoveryTerms }
+module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, normalizeCapturedMedia, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, videoShareDailyLimit, videoShareDiscoveryTerms }
