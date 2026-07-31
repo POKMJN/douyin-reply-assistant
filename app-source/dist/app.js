@@ -266,7 +266,7 @@ function settingsView() {
       <label class="setting-row"><span><strong>自动学习联系人</strong><small>生成回复前读取近期对话，改善语气匹配</small></span><input type="checkbox" data-setting="autoLearnContacts" ${checked('autoLearnContacts')} /></label>
       <label class="setting-field"><span><strong>联系人刷新频率</strong><small>后台检查新消息的间隔</small></span><select data-setting="refreshInterval"><option value="5" ${s.refreshInterval==='5'?'selected':''}>5 秒</option><option value="15" ${s.refreshInterval==='15'?'selected':''}>15 秒</option><option value="30" ${s.refreshInterval==='30'?'selected':''}>30 秒</option><option value="60" ${s.refreshInterval==='60'?'selected':''}>1 分钟</option><option value="300" ${s.refreshInterval==='300'?'selected':''}>5 分钟</option></select></label>
       <label class="setting-row"><span><strong>打开视频识别</strong><small>自动回复遇到视频、图片或分享卡片时读取可确认的媒体内容</small></span><input type="checkbox" data-setting="videoRecognitionEnabled" ${checked('videoRecognitionEnabled')} /></label>
-      <label class="setting-field"><span><strong>视频识别强度</strong><small>轻量抓封面和开头帧；标准读取音频、评论和关键帧；增强使用高清多帧+深度理解</small></span><select data-setting="videoRecognitionStrength"><option value="light" ${s.videoRecognitionStrength==='light'?'selected':''}>轻量</option><option value="standard" ${s.videoRecognitionStrength==='standard'?'selected':''}>标准</option><option value="deep" ${s.videoRecognitionStrength==='deep'?'selected':''}>增强</option></select></label>
+      <label class="setting-field"><span><strong>视频识别强度</strong><small>新增公开页模式：只读视频文案和评论，不读取封面、画面或音频</small></span><select data-setting="videoRecognitionStrength"><option value="light" ${s.videoRecognitionStrength==='light'?'selected':''}>轻量</option><option value="standard" ${s.videoRecognitionStrength==='standard'?'selected':''}>标准</option><option value="deep" ${s.videoRecognitionStrength==='deep'?'selected':''}>增强</option><option value="comments20" ${s.videoRecognitionStrength==='comments20'?'selected':''}>文案+评论20条</option><option value="comments30" ${s.videoRecognitionStrength==='comments30'?'selected':''}>文案+评论30条</option></select></label>
       <label class="setting-row"><span><strong>低置信度保守回复</strong><small>只有封面或截图时允许生成克制回复；关闭后直接跳过</small></span><input type="checkbox" data-setting="videoLowConfidenceReply" ${checked('videoLowConfidenceReply')} /></label>
       <label class="setting-row"><span><strong>先理解再回复</strong><small>先让视觉模型整理画面要点，再生成最终私信</small></span><input type="checkbox" data-setting="videoAnalysisFirst" ${checked('videoAnalysisFirst')} /></label>
       <label class="setting-row"><span><strong>多候选择优回复</strong><small>生成2条不同风格的候选，评分选最自然的一条再发送</small></span><input type="checkbox" data-setting="multiCandidateReply" ${checked('multiCandidateReply')} data-feature="multi-candidate" /></label>
@@ -346,9 +346,11 @@ function bindSettings() {
     alert([
       '视频识别回复说明',
       '',
-      '自动回复遇到视频、图片或分享卡片时，会先抓取最新一条对方消息的画面帧；标准和增强强度还会尽量读取视频音频与公开视频页评论。',
+      '自动回复遇到视频、图片或分享卡片时，会先识别最新一条对方消息；标准和增强强度会读取画面、音频与公开视频页评论。',
       '',
-      '轻量：抓封面和开头帧，速度最快；标准：画面 + 音频 + 评论；增强：高清多帧+深度理解。',
+      '轻量：抓封面和开头帧，速度最快；标准：画面 + 音频 + 评论；增强：高清多帧 + 深度理解。',
+      '',
+      '文案+评论20条 / 30条：只打开公开视频页读取标题、作者、文案和评论，不读取视频封面、内容画面或音频；适合只想根据评论区氛围回复的场景。',
       '',
       '新增"多候选择优回复"：对视频消息先生成2条不同风格的回复，经过评分（具体性、自然度、长度、语气）选出最自然的一条再发送。'
     ].join('\n'))

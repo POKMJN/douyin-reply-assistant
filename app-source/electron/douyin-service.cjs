@@ -37,6 +37,20 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const normalizeEditorText = (text) => String(text || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim()
 const MAX_VIDEO_DOWNLOAD_BYTES = 200 * 1024 * 1024
 const AUDIO_TRANSCRIPTION_SECONDS = 90
+const CHAT_MESSAGE_ROW_SELECTOR = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"]'
+const CHAT_MESSAGE_MEDIA_SELECTOR = '[class*="sticker"], [class*="emoji"], [class*="imageMsg"], [class*="mediaMsg"], [class*="cardMsg"]'
+
+function pickLatestChatMessageRole(candidates, { editorRect, innerWidth = 0 } = {}) {
+  const divider = editorRect ? editorRect.left + (editorRect.width / 2) : innerWidth * 0.65
+  const rows = (Array.isArray(candidates) ? candidates : [])
+    .filter((item) => item && item.withinMessageRow === true && item.rect && item.rect.width > 0 && item.rect.height > 0)
+    .sort((left, right) => right.rect.top - left.rect.top)
+  if (!rows.length) return null
+  const last = rows[0]
+  if (last.me === true) return 'me'
+  if (last.them === true) return 'contact'
+  return last.rect.left + (last.rect.width / 2) > divider ? 'me' : 'contact'
+}
 
 const tempPath = (prefix, extension) => path.join(
   os.tmpdir(),
@@ -253,7 +267,7 @@ const mediaRequestHeaders = async (url, win) => {
 
 const normalizeVideoRecognitionStrength = (value) => {
   const key = String(value || 'standard').toLowerCase()
-  return ['light', 'standard', 'deep'].includes(key) ? key : 'standard'
+  return ['light', 'standard', 'deep', 'comments20', 'comments30'].includes(key) ? key : 'standard'
 }
 
 const videoRecognitionOptions = (settings = {}) => {
@@ -261,7 +275,9 @@ const videoRecognitionOptions = (settings = {}) => {
   const presets = {
     light: { strength, maxFrames: 1, audio: false, commentLimit: 0, commentWaitMs: 0 },
     standard: { strength, maxFrames: 3, audio: true, commentLimit: 3, commentWaitMs: 3000 },
-    deep: { strength, maxFrames: 3, audio: true, commentLimit: 8, commentWaitMs: 5200 },
+    deep: { strength, maxFrames: 9, audio: true, commentLimit: 12, commentWaitMs: 6500, frameDetail: 'high', imageMaxSize: 960, jpegQuality: 72 },
+    comments20: { strength, maxFrames: 0, audio: false, commentLimit: 20, commentWaitMs: 6500, commentScrolls: 4, publicPageOnly: true },
+    comments30: { strength, maxFrames: 0, audio: false, commentLimit: 30, commentWaitMs: 8500, commentScrolls: 6, publicPageOnly: true },
   }
   return presets[strength] || presets.standard
 }
@@ -272,11 +288,11 @@ const normalizeCommentContext = (value = {}, limit = 5) => {
     .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
     .filter((item) => item.length >= 2)
     .filter((item, index, list) => list.indexOf(item) === index)
-    .slice(0, Math.max(0, Math.min(12, Math.floor(Number(limit) || 0))))
+    .slice(0, Math.max(0, Math.min(30, Math.floor(Number(limit) || 0))))
   return {
     videoPageTitle: String(source.title || source.videoPageTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120),
     videoPageAuthor: String(source.author || source.videoPageAuthor || '').replace(/\s+/g, ' ').trim().slice(0, 60),
-    videoPageDescription: String(source.description || source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+    videoPageDescription: String(source.description || source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     videoComments: comments,
     videoCommentSource: String(source.source || ''),
     videoCommentError: String(source.error || ''),
@@ -571,7 +587,7 @@ const isVideoPreview = (value) => /(?:\[?视频\]?|发来一个视频|分享(?:�
 const mediaPreviewKind = (value) => {
   const text = String(value || '')
   if (isVideoPreview(text)) return 'video'
-  if (/(?:\[?媒体\]?|媒体卡片|分享\s*@|来自视频)/i.test(text)) return 'share'
+  if (/(?:\[?媒体\]?|媒体卡片|分享\s*@|分享\s*\[?\s*评论\s*\]?|分享.{0,24}评论|来自视频)/i.test(text)) return 'share'
   if (/(?:\[?图集\]?|分享\[图集\]|相册)/i.test(text)) return 'album'
   if (/(?:\[?图片\]?|照片|photo|image)/i.test(text)) return 'image'
   if (/(?:\[?动图\]?|GIF)/i.test(text)) return 'gif'
@@ -582,20 +598,29 @@ const mediaPreviewKind = (value) => {
 
 const normalizeCapturedMedia = (value, hintedKind = '') => {
   const source = value && typeof value === 'object' ? value : {}
+  const frameLimit = Math.max(0, Math.min(9, Math.floor(Number(source.maxFrames ?? source.frameLimit ?? 3) || 0)))
   const frames = (Array.isArray(value) ? value : Array.isArray(source.frames) ? source.frames : [])
     .map((frame) => String(frame || '').trim())
     .filter((frame) => /^data:image\/(?:jpeg|png|webp);base64,/i.test(frame) || /^https?:\/\//i.test(frame))
-    .slice(0, 3)
+    .slice(0, frameLimit)
   const mediaKind = String(source.mediaKind || hintedKind || (source.detectedVideo ? 'video' : frames.length ? 'media' : '') || '')
   const decodedVideoFrames = Math.max(0, Math.floor(Number(source.decodedVideoFrames || 0) || 0))
   const detectedVideo = Boolean(source.detectedVideo || mediaKind === 'video')
   const videoReady = source.videoReady === true || decodedVideoFrames > 0
+  const hasPublicContext = Boolean(
+    String(source.videoPageTitle || source.title || '').trim()
+      || String(source.videoPageDescription || source.description || '').trim()
+      || (Array.isArray(source.videoComments) && source.videoComments.length)
+      || (Array.isArray(source.comments) && source.comments.length)
+  )
   const confidence = String(source.confidence || (
-    !frames.length ? 'none' : detectedVideo ? (videoReady ? 'high' : 'low') : mediaKind === 'share' ? 'medium' : 'medium'
+    !frames.length ? (hasPublicContext ? 'medium' : 'none') : detectedVideo ? (videoReady ? 'high' : 'low') : mediaKind === 'share' ? 'medium' : 'medium'
   ))
-  const commentContext = normalizeCommentContext(source, source.videoComments?.length || 0)
+  const commentContext = normalizeCommentContext(source, source.videoComments?.length || source.comments?.length || 0)
   return {
     frames,
+    maxFrames: frameLimit,
+    frameDetail: String(source.frameDetail || ''),
     mediaKind,
     detectedVideo,
     videoReady,
@@ -613,6 +638,25 @@ const normalizeCapturedMedia = (value, hintedKind = '') => {
     reason: String(source.reason || ''),
   }
 }
+
+const modelMediaRect = (rect = {}, { stripBottom = true } = {}) => {
+  const x = Math.max(0, Math.floor(Number(rect.x ?? rect.left ?? 0) || 0))
+  const y = Math.max(0, Math.floor(Number(rect.y ?? rect.top ?? 0) || 0))
+  const width = Math.max(1, Math.ceil(Number(rect.width || 0) || 0))
+  const rawHeight = Math.max(1, Math.ceil(Number(rect.height || 0) || 0))
+  const height = stripBottom ? Math.max(1, Math.ceil(rawHeight * 0.84)) : rawHeight
+  return { x, y, width, height }
+}
+
+const hasPublicMediaContext = (media = {}) => Boolean(
+  String(media.videoPageTitle || '').trim()
+    || String(media.videoPageDescription || '').trim()
+    || (Array.isArray(media.videoComments) && media.videoComments.length)
+)
+
+const shouldUseVideoFrameFallback = (recognition = {}, mediaCapture = {}) => (
+  recognition.publicPageOnly !== true && !mediaCapture.frames?.length
+)
 
 function extractConversationPreview(lines, explicitPreview = '', explicitStreak = '') {
   const preview = String(explicitPreview || '').replace(/\s+/g, ' ').trim()
@@ -714,7 +758,24 @@ class DouyinService {
     savedSeen.forEach(p => this.lastSeen.set(p.name, p.preview))
     const savedPairs = (this.storage?.get().lastSentPairs || []).filter(p => Date.now() - p.at < 86400000)
     this.lastSent = new Map(savedPairs.map(p => [p.name, p.text]))
+    this.lastSentAt = new Map(savedPairs.map(p => [p.name, Number(p.at) || Date.now()]))
     this.lastReplyTime = new Map()
+  }
+
+  persistLastSentPairs() {
+    if (!this.storage?.update) return
+    const now = Date.now()
+    const pairs = [...this.lastSent].map(([name, text]) => ({ name, text, at: this.lastSentAt.get(name) || now }))
+    this.storage.update({ lastSentPairs: pairs })
+  }
+
+  rememberSelfPreview(name, preview) {
+    const target = String(name || '').trim()
+    const text = String(preview || '').replace(/\s+/g, ' ').trim()
+    if (!target || !text) return
+    this.lastSent.set(target, text)
+    this.lastSentAt.set(target, Date.now())
+    this.persistLastSentPairs()
   }
 
   findFfmpegPath() {
@@ -763,8 +824,9 @@ class DouyinService {
   }
 
   async readVideoCommentContext(media, name, options = {}) {
-    const limit = Math.max(0, Math.min(12, Math.floor(Number(options.commentLimit || 0) || 0)))
+    const limit = Math.max(0, Math.min(30, Math.floor(Number(options.commentLimit || 0) || 0)))
     if (!limit || !media?.shareUrl) return {}
+    const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
     const win = this.ensureDiscoveryWindow()
     try {
       await win.loadURL(media.shareUrl)
@@ -789,23 +851,25 @@ class DouyinService {
         return Boolean(target)
       })()`).catch(() => false)
       await sleep(Math.max(600, Math.floor(Number(options.commentWaitMs || 3000) / 2)))
-      await win.webContents.executeJavaScript(`(() => {
-        try {
-          const scrollers = [...document.querySelectorAll('[class*="comment" i], [data-e2e*="comment" i], [role="dialog"], main, body')]
-            .filter((node) => node && node.scrollHeight > node.clientHeight + 50)
-            .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight))
-          const target = scrollers[0] || document.scrollingElement || document.documentElement
-          target.scrollBy(0, Math.max(320, innerHeight * 0.55))
-        } catch {}
-        return true
-      })()`).catch(() => false)
-      await sleep(Math.max(500, Math.floor(Number(options.commentWaitMs || 3000) / 3)))
+      for (let index = 0; index < scrolls; index += 1) {
+        await win.webContents.executeJavaScript(`(() => {
+          try {
+            const scrollers = [...document.querySelectorAll('[class*="comment" i], [data-e2e*="comment" i], [role="dialog"], main, body')]
+              .filter((node) => node && node.scrollHeight > node.clientHeight + 50)
+              .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight))
+            const target = scrollers[0] || document.scrollingElement || document.documentElement
+            target.scrollBy(0, Math.max(320, innerHeight * 0.55))
+          } catch {}
+          return true
+        })()`).catch(() => false)
+        await sleep(Math.max(350, Math.floor(Number(options.commentWaitMs || 3000) / (scrolls + 2))))
+      }
       const context = await win.webContents.executeJavaScript(`(() => {
         const limit = ${JSON.stringify(limit)}
         const normalize = (value, max = 220) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max)
         const meta = (selector) => normalize(document.querySelector(selector)?.content || document.querySelector(selector)?.getAttribute('content') || '', 180)
         const title = normalize(meta('meta[property="og:title"]') || meta('meta[name="title"]') || document.title, 120)
-        const description = normalize(meta('meta[property="og:description"]') || meta('meta[name="description"]'), 220)
+        const description = normalize(meta('meta[property="og:description"]') || meta('meta[name="description"]'), 500)
         const author = normalize(document.querySelector('[data-e2e*="author"], [class*="author" i], [class*="user" i]')?.innerText || '', 60)
         const bad = /(发表评论|写评论|输入评论|登录|扫码|打开抖音|点击查看|分享|收藏|点赞|展开|收起|回复|查看更多|全部评论|暂无评论|相关搜索|搜索|广告|举报)/i
         const textOf = (node) => normalize([
@@ -934,6 +998,7 @@ class DouyinService {
     if (this.window && !this.window.isDestroyed()) await this.window.loadURL(CHAT_URL)
     this.lastSeen.clear()
     this.lastSent.clear()
+    this.lastSentAt.clear()
     this.emitEvent('status', await this.getStatus())
     return { ok: true }
   }
@@ -1055,14 +1120,15 @@ class DouyinService {
   // <img> or <video> alone can capture an avatar or a sticker instead.
   async captureLatestIncomingMedia(name, recognitionOptions = {}) {
     const recognition = { ...videoRecognitionOptions(this.storage.get().settings || {}), ...(recognitionOptions || {}) }
-    const maxFrames = Math.max(1, Math.min(3, Math.floor(Number(recognition.maxFrames || 3) || 3)))
+    const maxFrames = Math.max(0, Math.min(9, Math.floor(Number(recognition.maxFrames ?? 3) || 0)))
+    const shouldCaptureFrames = maxFrames > 0 && recognition.publicPageOnly !== true
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
     const media = await win.webContents.executeJavaScript(`(() => {
       document.querySelectorAll('[data-xusheng-media-capture]').forEach((node) => node.removeAttribute('data-xusheng-media-capture'))
       const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
-      const selector = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"]'
+      const selector = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"], [class*="sticker"], [class*="emoji"], [class*="imageMsg"], [class*="mediaMsg"], [class*="cardMsg"]'
       const all = [...document.querySelectorAll(selector)]
       const rows = all.filter((node) => !all.some((parent) => parent !== node && parent.contains(node)))
         .map((node) => {
@@ -1072,8 +1138,9 @@ class DouyinService {
           const selfByClass = /MessageItemTextisFromMe|isFromMe|(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(signature)
           const contactByClass = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(signature)
           const mediaNode = node.querySelector('video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]')
-          if (!mediaNode || !rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
-          const mediaRect = mediaNode.getBoundingClientRect()
+          if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
+          const roleNode = mediaNode || node
+          const mediaRect = roleNode.getBoundingClientRect()
           const center = mediaRect.left + mediaRect.width / 2
           const divider = editorRect ? editorRect.left + editorRect.width / 2 : innerWidth * 0.65
           const role = selfByClass ? 'me' : contactByClass ? 'contact' : center > divider ? 'me' : 'contact'
@@ -1081,11 +1148,29 @@ class DouyinService {
           const videoCandidate = video || node.querySelector('[class*="video" i], [class*="player" i], [class*="play" i]')
           const poster = video?.poster || node.querySelector('img')?.currentSrc || node.querySelector('img')?.src || ''
           const videoUrl = video?.currentSrc || video?.src || video?.querySelector('source')?.src || ''
-          const shareUrl = [...node.querySelectorAll('a[href]')]
-            .map((anchor) => {
-              try { return new URL(anchor.getAttribute('href') || '', location.href).href } catch { return '' }
-            })
-            .find((url) => /(?:^https?:\\/\\/v\\.douyin\\.com\\/|douyin\\.com\\/(?:video|note)\\/|douyin\\.com\\/share\\/)/i.test(url)) || ''
+          const shareUrl = (() => {
+            const urlPattern = /(?:https?:\\/\\/v\\.douyin\\.com\\/[^\\s"'<>]+|https?:\\/\\/[^\\s"'<>]*douyin\\.com\\/(?:video|note|share)\\/[^\\s"'<>]+|\\/video\\/\\d+|\\/note\\/\\d+|\\/share\\/[^\\s"'<>]+)/i
+            const values = []
+            const collect = (item) => {
+              const text = String(item || '')
+              const match = text.match(urlPattern)
+              if (match) values.push(match[0])
+            }
+            const nodes = [node, ...node.querySelectorAll('*')]
+            for (const item of nodes) {
+              for (const attr of ['href', 'src', 'data-href', 'data-url', 'data-share-url', 'data-video-url', 'data-item-url', 'data-link', 'aria-label', 'title']) {
+                collect(item.getAttribute?.(attr))
+              }
+              collect(item.dataset ? Object.values(item.dataset).join(' ') : '')
+            }
+            collect(node.innerText)
+            collect(node.outerHTML)
+            for (const raw of values) {
+              try { return new URL(raw, location.href).href } catch {}
+            }
+            return ''
+          })()
+          if (!mediaNode && !shareUrl) return null
           const shareTitle = String(node.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120)
           const videoRect = video?.getBoundingClientRect()
           return { node, rect, role, top: rect.top, video, videoCandidate, poster, videoUrl, videoRect, shareUrl, shareTitle }
@@ -1124,10 +1209,12 @@ class DouyinService {
       const image = await win.webContents.capturePage(rect)
       if (image.isEmpty()) return
       const size = image.getSize()
-      const scale = Math.min(1, 640 / size.width, 640 / size.height)
+      const imageMaxSize = Math.max(320, Math.min(1280, Math.floor(Number(recognition.imageMaxSize || 640) || 640)))
+      const jpegQuality = Math.max(45, Math.min(90, Math.floor(Number(recognition.jpegQuality || 58) || 58)))
+      const scale = Math.min(1, imageMaxSize / size.width, imageMaxSize / size.height)
       const resized = scale < 1 ? image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' }) : image
-      const frame = `data:image/jpeg;base64,${resized.toJPEG(58).toString('base64')}`
-      if (frame.length <= 220_000 && !frames.includes(frame)) frames.push(frame)
+      const frame = `data:image/jpeg;base64,${resized.toJPEG(jpegQuality).toString('base64')}`
+      if (frame.length <= 420_000 && !frames.includes(frame)) frames.push(frame)
     }
     const seek = async (ratio) => win.webContents.executeJavaScript(`new Promise((resolve) => {
       const video = document.querySelector('[data-xusheng-media-capture="latest"] video')
@@ -1152,11 +1239,16 @@ class DouyinService {
       setTimeout(() => { video.removeEventListener('loadedmetadata', ready); seekNow() }, 2500)
     })`).catch(() => false)
     let decodedVideoFrames = 0
-    if (media.isVideo) {
+    if (!shouldCaptureFrames) {
+      // Public-page modes intentionally avoid screenshots, posters and video frames.
+    } else if (media.isVideo) {
       await capture(media.rect)
-      for (const ratio of (maxFrames > 2 ? [0.2, 0.68] : maxFrames > 1 ? [0.5] : [])) {
+      const ratios = maxFrames > 1
+        ? Array.from({ length: maxFrames - 1 }, (_, index) => (index + 1) / maxFrames)
+        : []
+      for (const ratio of ratios) {
         if (await seek(ratio)) {
-          await capture(media.videoRect || media.rect)
+          await capture(modelMediaRect(media.videoRect || media.rect))
           decodedVideoFrames += 1
         }
       }
@@ -1166,24 +1258,26 @@ class DouyinService {
     // A poster URL is often the cleanest key frame for a Douyin share card.
     // Keep the full video URL out of model payloads because standard
     // OpenAI-compatible chat endpoints do not accept video_url parts.
-    if (media.posterUrl && frames.length < 3 && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
-    this.log('media_captured', `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: Boolean(media.posterUrl), strength: recognition.strength || 'standard' })
+    if (shouldCaptureFrames && media.posterUrl && frames.length < maxFrames && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
+    this.log(recognition.publicPageOnly === true ? 'video_public_context_attempted' : 'media_captured', recognition.publicPageOnly === true ? `已尝试读取 ${name} 的视频公开页文案和评论` : `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: shouldCaptureFrames && Boolean(media.posterUrl), strength: recognition.strength || 'standard', publicPageOnly: recognition.publicPageOnly === true })
     const [audioMeta, commentMeta] = await Promise.all([
-      recognition.audio === false ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
+      recognition.audio === false || recognition.publicPageOnly === true ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
       this.readVideoCommentContext(media, name, recognition),
     ])
     const result = normalizeCapturedMedia({
       frames: frames.slice(0, maxFrames),
+      maxFrames,
+      frameDetail: recognition.frameDetail || '',
       mediaKind: media.isVideo ? 'video' : 'media',
       detectedVideo: media.isVideo,
       videoReady: media.isVideo && decodedVideoFrames > 0,
       decodedVideoFrames,
       videoAddressFound: Boolean(media.videoUrl),
       videoPageUrlFound: Boolean(media.shareUrl),
-      posterFound: Boolean(media.posterUrl),
+      posterFound: shouldCaptureFrames && Boolean(media.posterUrl),
       captureSource: 'message_bubble',
-      confidence: media.isVideo ? (decodedVideoFrames > 0 ? 'high' : frames.length ? 'low' : 'none') : (frames.length ? 'medium' : 'none'),
-      reason: media.isVideo && decodedVideoFrames <= 0 ? 'video_not_decoded' : '',
+      confidence: shouldCaptureFrames ? (media.isVideo ? (decodedVideoFrames > 0 ? 'high' : frames.length ? 'low' : 'none') : (frames.length ? 'medium' : 'none')) : (commentMeta.videoComments?.length || commentMeta.videoPageDescription || commentMeta.videoPageTitle ? 'medium' : 'none'),
+      reason: shouldCaptureFrames ? (media.isVideo && decodedVideoFrames <= 0 ? 'video_not_decoded' : '') : 'public_page_only',
       videoPageTitle: media.shareTitle || '',
       ...commentMeta,
       ...audioMeta,
@@ -1489,10 +1583,8 @@ class DouyinService {
       await sleep(250)
     }
     if (!sent) throw new Error(`Douyin did not confirm emoji "${emojiName}" was sent`)
-    this.lastSent.set(name, `[${emojiName}]`)
+    this.rememberSelfPreview(name, `[${emojiName}]`)
     this.lastReplyTime.set(name, Date.now())
-    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
-    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'emoji')
     this.log('message_sent', `Sent emoji "${emojiName}" to ${name}`, { name, emoji: emojiName })
     return { ok: true, kind: 'emoji', emojiName }
@@ -1786,11 +1878,9 @@ class DouyinService {
     if (!confirmed) throw new Error(`Douyin did not confirm the video card was sent; send point=(${sendPoint.x}, ${sendPoint.y})`)
 
     const sentText = `[视频分享] ${video.title || video.note || video.url || ''}`.replace(/\s+/g, ' ').trim()
-    this.lastSent.set(target, sentText)
+    this.rememberSelfPreview(target, sentText)
     this.lastSeen.set(target, sentText)
     this.lastReplyTime.set(target, Date.now())
-    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
-    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(target, 'videoShare')
     this.recordConversationMessage(target, 'me', sentText)
     this.log('message_sent', `Shared a video card with ${target}`, { name: target, url, source: metadata.source || 'video_share', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
@@ -1949,20 +2039,41 @@ class DouyinService {
       const win = await this.selectConversation(name)
       await this.waitForEditor(win)
       const role = await win.webContents.executeJavaScript(`(() => {
-        const all = [...document.querySelectorAll('[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"]')]
-        const rows = all.filter((node) => !all.some((parent) => parent !== node && parent.contains(node)))
-          .filter(n => n.getBoundingClientRect().width > 0 && n.getBoundingClientRect().height > 0)
-          .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)
-        if (!rows.length) return null
-        const last = rows[0]
-        let sig = ''
-        for (let c = last, d = 0; c && d < 4; c = c.parentElement, d++) sig += ' ' + (c.className || '')
-        const me = /isFromMe|MessageItemTextisFromMe/i.test(sig) || /(?:^|[\\s_-])(self|mine|my|right|send)(?:[\\s_-]|$)/i.test(sig)
-        const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(sig)
-        if (me) return 'me'
-        if (them) return 'contact'
-        const rect = last.getBoundingClientRect()
-        return rect.left + rect.width / 2 > window.innerWidth * 0.5 ? 'me' : 'contact'
+        const rowSelector = ${JSON.stringify(CHAT_MESSAGE_ROW_SELECTOR)}
+        const mediaSelector = ${JSON.stringify(CHAT_MESSAGE_MEDIA_SELECTOR)}
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
+        const editorRect = editor?.getBoundingClientRect()
+        const seen = new Set()
+        const candidates = [...document.querySelectorAll(rowSelector + ', ' + mediaSelector)]
+          .map((node) => {
+            const row = node.closest(rowSelector)
+            if (!row || seen.has(row)) return null
+            seen.add(row)
+            const rect = row.getBoundingClientRect()
+            if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
+            let sig = ''
+            for (let c = row, d = 0; c && d < 4; c = c.parentElement, d += 1) sig += ' ' + String(c.className || '')
+            const me = /isFromMe|MessageItemTextisFromMe/i.test(sig) || /(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(sig)
+            const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(sig)
+            const bubble = row.querySelector('[class*="content"], [class*="text"], [class*="bubble"], video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]') || row
+            const bubbleRect = bubble.getBoundingClientRect()
+            return {
+              withinMessageRow: true,
+              rect: {
+                top: rect.top,
+                left: bubbleRect.left,
+                width: bubbleRect.width,
+                height: bubbleRect.height,
+              },
+              me,
+              them,
+            }
+          })
+          .filter(Boolean)
+        return (${pickLatestChatMessageRole.toString()})(candidates, {
+          innerWidth: window.innerWidth,
+          editorRect: editorRect ? { left: editorRect.left, width: editorRect.width } : null,
+        })
       })()`).catch(() => null)
       return role === 'me' ? true : role === 'contact' ? false : null
     } catch (_) { return null }
@@ -2056,11 +2167,9 @@ class DouyinService {
       throw error
     }
     const normalized = value.replace(/\s+/g, ' ').trim()
-    this.lastSent.set(name, normalized)
+    this.rememberSelfPreview(name, normalized)
     this.lastSeen.set(name, normalized)
     this.lastReplyTime.set(name, Date.now())
-    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
-    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'text')
     this.recordConversationMessage(name, 'me', normalized)
     this.log('message_sent', `Sent a message to ${name}`, { name, text: normalized, source: metadata.source || 'manual', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
@@ -2131,6 +2240,7 @@ class DouyinService {
     const state = this.storage.get()
     const config = state.automation || {}
     const settings = state.settings || {}
+    const draftOnly = settings.aiReplyDraftOnly === true
     if (settings.quietHours) {
       const toMinutes = (value) => {
         const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
@@ -2188,7 +2298,7 @@ class DouyinService {
           continue
         }
         if (previous === currentMessageKey && !reenabled) continue
-        if (!pendingInquiry && !canSend(contact.name)) {
+        if (!pendingInquiry && !draftOnly && !canSend(contact.name)) {
           const noticeKey = `${contact.name}:${localDateKey()}`
           if (!this.lastLimitNotice.has(noticeKey)) {
             this.lastLimitNotice.set(noticeKey, Date.now())
@@ -2198,9 +2308,19 @@ class DouyinService {
           // resets instead of being silently discarded.
           continue
         }
+        const bracketedPreview = /^\[[^\]\r\n]{1,40}\]$/.test(String(contact.preview || '').trim())
+        const lastSelfAt = Number(this.lastSentAt.get(contact.name) || 0)
+        const recentSelfPreview = bracketedPreview
+          && this.lastSent.get(contact.name) === String(contact.preview || '').replace(/\s+/g, ' ').trim()
+          && Date.now() - lastSelfAt < 90_000
+        if (recentSelfPreview) {
+          this.log('auto_skip', `${contact.name} 是刚刚自己发的表情，跳过`, { name: contact.name, preview: contact.preview })
+          this.lastSeen.set(contact.name, currentMessageKey)
+          continue
+        }
         // A positive list marker is useful, but its absence is not proof that
         // the latest message came from the contact. Verify in the chat view.
-        const fromMe = contact.fromMe === true ? true : await this.isLastMessageFromMe(contact.name)
+        const fromMe = contact.fromMe === true ? true : bracketedPreview ? false : await this.isLastMessageFromMe(contact.name)
         if (fromMe === true) {
           this.log('auto_skip', `${contact.name} 是自己发的，跳过`)
           this.lastSeen.set(contact.name, currentMessageKey)
@@ -2258,10 +2378,11 @@ class DouyinService {
                 continue
               }
               try {
-                mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, videoRecognitionOptions(settings)), mediaKind)
+                const recognition = videoRecognitionOptions(settings)
+                mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, recognition), mediaKind)
                 // Keep the original node-level capture as a fallback for older
                 // page layouts where the message wrapper is not discoverable.
-                if (!mediaCapture.frames.length && this.captureLatestIncomingVideo) {
+                if (shouldUseVideoFrameFallback(recognition, mediaCapture) && this.captureLatestIncomingVideo) {
                   mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingVideo(contact.name), mediaKind)
                 }
               } catch (_) {}
@@ -2269,19 +2390,20 @@ class DouyinService {
             if (isMedia) {
               const providers = this.storage.get().providers || []
               const hasAudioTranscript = Boolean(mediaCapture.audioTranscript)
+              const hasPublicContext = hasPublicMediaContext(mediaCapture)
               const caps = providers.length ? providers.some(p => (p.capabilities || []).includes('vision')) : Boolean(this.ai?.hasProvider?.())
-              if (!caps && !hasAudioTranscript) {
+              if (!caps && !hasAudioTranscript && !hasPublicContext) {
                 this.log('media_skipped', `${contact.name} media skipped because the model lacks vision`, { name: contact.name, mediaKind })
                 this.lastSeen.set(contact.name, currentMessageKey)
                 continue
               }
               const requiresDecodedVideo = mediaKind === 'video' || mediaCapture.detectedVideo === true
-              if (!mediaCapture.frames.length && !hasAudioTranscript) {
+              if (!mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext) {
                 this.log(requiresDecodedVideo ? 'video_unreadable' : 'media_uncertain', `${contact.name} media frames could not be captured`, { name: contact.name, mediaKind, mediaCapture })
                 this.lastSeen.set(contact.name, currentMessageKey)
                 continue
               }
-              if (requiresDecodedVideo && mediaCapture.videoReady !== true && !hasAudioTranscript) {
+              if (requiresDecodedVideo && mediaCapture.videoReady !== true && !hasAudioTranscript && !hasPublicContext) {
                 if (settings.videoLowConfidenceReply === false) {
                   this.log('video_unreadable', `${contact.name} video frames were low confidence and conservative replies are disabled`, { name: contact.name, mediaKind, mediaCapture, reason: 'low_confidence_disabled' })
                   this.lastSeen.set(contact.name, currentMessageKey)
@@ -2307,6 +2429,17 @@ class DouyinService {
           }
         }
         if (replyText) {
+          if (draftOnly && aiAttempted) {
+            this.lastSeen.set(contact.name, currentMessageKey)
+            this.log('reply_drafted', `AI draft prepared for ${contact.name}`, {
+              name: contact.name,
+              text: replyText,
+              incoming: contact.preview,
+              model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型',
+              provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '',
+            })
+            continue
+          }
           try {
             const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '', provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '', aiLabel: aiDraft?.aiLabel || `AI · ${aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型'}` } : { source: 'rule' }
             await this.sendMessage(contact.name, replyText, aiMeta)
@@ -2397,4 +2530,4 @@ class DouyinService {
   }
 }
 
-module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, normalizeCapturedMedia, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, videoShareDailyLimit, videoShareDiscoveryTerms }
+module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, hasPublicMediaContext, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVideoRecognitionStrength, normalizeVideoShareCategories, normalizeVideoShareItems, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms }

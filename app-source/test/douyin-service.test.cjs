@@ -7,7 +7,7 @@ Module._load = function (request, parent, isMain) {
   if (request === 'electron') return { BrowserWindow: class {}, session: {} }
   return originalLoad.call(this, request, parent, isMain)
 }
-const { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, scheduleNextVideoShareAt, videoShareDailyLimit, videoShareDiscoveryTerms } = require('../electron/douyin-service.cjs')
+const { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms } = require('../electron/douyin-service.cjs')
 Module._load = originalLoad
 
 const localDateKey = (value = new Date()) => {
@@ -111,6 +111,93 @@ test('AI automation passes captured video frames to the draft request', async ()
   assert.equal(drafted[0].videoFrames.audioTranscriptionModel, 'whisper-test')
   assert.deepEqual(captureOptions, { strength: 'deep', maxFrames: 9, audio: true, commentLimit: 12, commentWaitMs: 6500, frameDetail: 'high', imageMaxSize: 960, jpegQuality: 72 })
   assert.deepEqual(drafted[0].videoFrames.videoComments, ['看起来好香'])
+})
+
+test('public-page comment modes keep video replies text-only', async () => {
+  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }), {
+    strength: 'comments20',
+    maxFrames: 0,
+    audio: false,
+    commentLimit: 20,
+    commentWaitMs: 6500,
+    commentScrolls: 4,
+    publicPageOnly: true,
+  })
+  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), {
+    strength: 'comments30',
+    maxFrames: 0,
+    audio: false,
+    commentLimit: 30,
+    commentWaitMs: 8500,
+    commentScrolls: 6,
+    publicPageOnly: true,
+  })
+  const comments = Array.from({ length: 35 }, (_, index) => `评论${index + 1}`)
+  const context = normalizeCommentContext({ description: '这是一条公开页文案', comments }, 30)
+  assert.equal(context.videoComments.length, 30)
+  assert.equal(context.videoPageDescription, '这是一条公开页文案')
+  assert.equal(shouldUseVideoFrameFallback(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), { frames: [] }), false)
+})
+
+test('public-page context can reply without frames or fallback capture', async () => {
+  const comments = Array.from({ length: 30 }, (_, index) => `热评${index + 1}`)
+  const state = {
+    settings: { videoRecognitionStrength: 'comments30' },
+    providers: [{ name: 'Text', model: 'text-model', capabilities: [] }],
+    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
+    sendHistory: [],
+  }
+  const drafted = []
+  const sent = []
+  let captureOptions
+  let fallbackCalled = false
+  const service = new DouyinService({
+    storage: { get: () => structuredClone(state), addLog: () => {} },
+    emit: () => {},
+    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '这条评论区挺有意思' } } },
+  })
+  service.window = { isDestroyed: () => false }
+  service.getStatus = async () => ({ connected: true })
+  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
+  service.selectConversation = async () => null
+  service.captureLatestIncomingMedia = async (_name, options) => {
+    captureOptions = options
+    return normalizeCapturedMedia({
+      frames: [],
+      maxFrames: options.maxFrames,
+      mediaKind: 'video',
+      detectedVideo: true,
+      videoReady: false,
+      videoPageTitle: '早市小吃',
+      videoPageDescription: '老板出摊做早餐',
+      videoComments: comments,
+      confidence: 'medium',
+      reason: 'public_page_only',
+    })
+  }
+  service.captureLatestIncomingVideo = async () => {
+    fallbackCalled = true
+    return { frames: ['data:image/jpeg;base64,frame'] }
+  }
+  service.sendMessage = async (name, text) => { sent.push({ name, text }) }
+  service.lastSeen.set('小明', '旧消息')
+
+  await service.runAutomation()
+
+  assert.deepEqual(captureOptions, {
+    strength: 'comments30',
+    maxFrames: 0,
+    audio: false,
+    commentLimit: 30,
+    commentWaitMs: 8500,
+    commentScrolls: 6,
+    publicPageOnly: true,
+  })
+  assert.equal(fallbackCalled, false)
+  assert.equal(drafted.length, 1)
+  assert.deepEqual(drafted[0].videoFrames.frames, [])
+  assert.equal(drafted[0].videoFrames.videoComments.length, 30)
+  assert.deepEqual(sent, [{ name: '小明', text: '【AI · text-model】这条评论区挺有意思' }])
 })
 
 test('AI automation can reply to video audio when no frame was captured', async () => {

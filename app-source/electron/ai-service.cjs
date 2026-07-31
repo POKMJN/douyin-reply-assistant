@@ -382,7 +382,7 @@ function buildVideoSharePrompt(contact, video = {}) {
 }
 
 function normalizeFrameLimit(value) {
-  return Math.max(1, Math.min(8, Math.floor(Number(value || 3) || 3)))
+  return Math.max(1, Math.min(9, Math.floor(Number(value || 3) || 3)))
 }
 
 function normalizeFrameDetail(value) {
@@ -414,7 +414,7 @@ function normalizeVideoInput(value) {
   const videoComments = (Array.isArray(source.videoComments) ? source.videoComments : [])
     .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean)
-    .slice(0, 12)
+    .slice(0, 30)
   const confidence = String(source.confidence || (
     !frames.length ? 'none' : detectedVideo ? (videoReady ? 'high' : 'low') : 'medium'
   ))
@@ -437,7 +437,7 @@ function normalizeVideoInput(value) {
     audioTranscriptionError: String(source.audioTranscriptionError || ''),
     videoPageTitle: String(source.videoPageTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120),
     videoPageAuthor: String(source.videoPageAuthor || '').replace(/\s+/g, ' ').trim().slice(0, 60),
-    videoPageDescription: String(source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+    videoPageDescription: String(source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     videoComments,
     videoCommentSource: String(source.videoCommentSource || ''),
     videoCommentError: String(source.videoCommentError || ''),
