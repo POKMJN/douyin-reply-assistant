@@ -148,11 +148,15 @@ test('visible shared-comment cards preserve comment text without treating author
   ].join('\n')
   const visible = normalizeVisibleMediaContext(cardText, 20)
 
-  assert.equal(visible.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(visible.videoPageTitle, '')
+  assert.equal(visible.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(visible.videoSharedComment, '起码累着自己了😍')
   assert.deepEqual(visible.videoComments, ['起码累着自己了😍'])
   assert.equal(visible.videoCommentSource, 'visible_card')
   const compactVisible = normalizeVisibleMediaContext(cardText.replace(/\n/g, ' '), 20)
-  assert.equal(compactVisible.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(compactVisible.videoPageTitle, '')
+  assert.equal(compactVisible.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(compactVisible.videoSharedComment, '起码累着自己了😍')
   assert.deepEqual(compactVisible.videoComments, ['起码累着自己了😍'])
   assert.deepEqual(normalizeVisibleMediaContext('xiang先生', 20).videoComments, [])
   assert.equal(normalizeVisibleMediaContext('xiang先生', 20).videoPageTitle, '')
@@ -164,7 +168,9 @@ test('visible shared-comment cards preserve comment text without treating author
     videoComments: [],
     videoCommentError: 'public page unavailable',
   }, cardText, 20)
-  assert.equal(merged.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(merged.videoPageTitle, '')
+  assert.equal(merged.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(merged.videoSharedComment, '起码累着自己了😍')
   assert.deepEqual(merged.videoComments, ['起码累着自己了😍'])
   assert.equal(mergePublicMediaContext({ videoPageTitle: 'xiang先生的作品 - 抖音' }, 'xiang先生', 20).videoPageTitle, '')
 })
@@ -1067,6 +1073,71 @@ test('AI reply uses saved contact context without blocking on live learning', as
   assert.equal(learningCalls, 0)
   assert.equal(drafted[0].contact.learning.ownerStyle.summary, '短句')
   assert.deepEqual(sent, [{ name: '小明', text: '【AI · 当前模型】马上回' }])
+})
+
+test('automation handles a new media bubble when the conversation preview is unchanged', async () => {
+  const preview = '\u5206\u4eab[\u56fe\u96c6]'
+  const listKey = `${preview}\u241f1`
+  const sent = []
+  const state = {
+    settings: {},
+    automation: {
+      autoReply: true,
+      paused: false,
+      rules: [{ enabled: true, keywords: ['\u5206\u4eab'], replyText: '\u6536\u5230' }],
+      sparks: [],
+    },
+    contacts: [],
+    sendHistory: [],
+  }
+  const service = new DouyinService({
+    storage: {
+      get: () => structuredClone(state),
+      update: (patch) => Object.assign(state, patch),
+      addLog: () => {},
+    },
+    emit: () => {},
+  })
+  service.window = { isDestroyed: () => false }
+  service.lastSeen.set('Ada', listKey)
+  service.getStatus = async () => ({ connected: true })
+  service.syncContacts = async () => ({
+    contacts: [{
+      id: 'Ada',
+      name: 'Ada',
+      preview,
+      messageKey: listKey,
+      unread: true,
+      sentAtLabel: '\u521a\u521a',
+    }],
+  })
+  service.captureLatestIncomingMessageIdentity = async () => ({ role: 'contact', fingerprint: 'bubble-2' })
+  service.getSendAllowance = () => ({ ok: true })
+  service.recordVideoShareEngagement = () => null
+  service.recordConversationMessage = (_name, _role, _text, contact) => contact
+  service.sendMessage = async (name, text) => { sent.push({ name, text }) }
+
+  await service.runAutomation()
+  await service.runAutomation()
+
+  assert.deepEqual(sent, [{ name: 'Ada', text: '\u6536\u5230' }])
+})
+
+test('latest-message identity browser script remains valid JavaScript', async () => {
+  const service = new DouyinService({ storage: { get: () => ({ settings: {} }) } })
+  service.selectConversation = async () => ({
+    webContents: {
+      executeJavaScript: async (script) => {
+        assert.doesNotThrow(() => new Function(script))
+        return { role: 'contact', fingerprint: 'msg-test', media: true }
+      },
+    },
+  })
+  service.waitForEditor = async () => true
+
+  const result = await service.captureLatestIncomingMessageIdentity('Ada')
+  assert.equal(result.fingerprint, 'msg-test')
+  assert.equal(result.role, 'contact')
 })
 
 test('automatic AI replies pass incoming message time to the model', async () => {

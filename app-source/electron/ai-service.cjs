@@ -315,6 +315,7 @@ function buildVideoPrompt(contact) {
 - 不要机械复述“视频里有……”，要像朋友随口回应。
 - 不要每句都用“这”或“这个”开头，也不要反复用它们泛指内容；整条回复最多使用一次，优先直接说具体的人、物、动作或感受。
 - 忽略抖音卡片 UI、左下角作者名/头像/水印、“来自视频”“分享自”等来源标签；这些不是视频内容本身，不要把作者名写进回复。
+- 评论可能是反讽、阴阳、玩梗或调侃；结合当前分享的评论、表情和多条热评判断语气，不要把夸张的字面赞美直接当成真诚态度。
 - 绝对不要回复“视频没加载出来”“评论没显示”“截个图给我”等话；只能根据已提供的文案、评论、字幕、音频或画面接话。信息不足时宁可简短回应已知内容，不要讨论加载状态。
 - 不说明你在看截图，不使用 Markdown，不暴露 AI 身份。语气合适时可以自然带 1 个 emoji。
 - 看不清时不要编造具体人物、地点或事件；可以保守说“画面有点糊，感觉像……”或“后面那个点还挺逗”。
@@ -445,6 +446,7 @@ function normalizeVideoInput(value) {
     videoPageTitle: String(source.videoPageTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120),
     videoPageAuthor: String(source.videoPageAuthor || '').replace(/\s+/g, ' ').trim().slice(0, 60),
     videoPageDescription: String(source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+    videoSharedComment: String(source.videoSharedComment || '').replace(/\s+/g, ' ').trim().slice(0, 180),
     videoComments,
     videoCommentSource: String(source.videoCommentSource || ''),
     videoCommentError: String(source.videoCommentError || ''),
@@ -501,6 +503,7 @@ function buildChatMessages(contact, incoming, videoFrames, mediaAnalysis = '', m
   const frames = media.frames.length ? media.frames : normalizeVideoFrames(videoFrames, media.maxFrames)
   const analysis = String(mediaAnalysis || '').replace(/\s+/g, ' ').trim().slice(0, 900)
   const audioTranscript = media.audioTranscript ? `视频音频转写：${media.audioTranscript}\n` : ''
+  const sharedCommentText = media.videoSharedComment ? `当前分享的评论：${media.videoSharedComment}\n` : ''
   const publicInfo = [
     media.videoPageTitle ? `标题：${media.videoPageTitle}` : '',
     media.videoPageDescription ? `文案：${media.videoPageDescription}` : '',
@@ -509,8 +512,8 @@ function buildChatMessages(contact, incoming, videoFrames, mediaAnalysis = '', m
     ? `视频公开页热评：${media.videoComments.map((item, index) => `${index + 1}. ${item}`).join(' / ')}\n`
     : ''
   const publicInfoText = publicInfo ? `视频公开页信息：${publicInfo}\n` : ''
-  const hasMediaContext = frames.length > 0 || Boolean(media.audioTranscript) || Boolean(publicInfoText) || Boolean(commentText)
-  const mediaText = `${current || '[视频]'}\n媒体捕获状态：${mediaCaptureSummary({ ...media, frames })}\n${analysis ? `视频理解结果：${analysis}\n` : ''}${publicInfoText}${audioTranscript}${commentText}${frames.length ? '以下是按时间顺序抽取的视频关键帧。先综合时间顺序、画面细节、字幕/屏幕文字、音频和公开页信息判断视频大概在表达什么，再只根据能确认的内容自然接话。低置信度时优先保守回应，不要编造。可以参考公开页评论判断大家的反应，但不要假装自己也发过评论。' : '优先根据可确认的文案和评论内容回复；没有画面证据时不要编造画面细节。作者名、用户名和平台来源标签不是内容，不要围绕它们接话，也不要声称没有加载、没有显示或要求对方截图。'}`
+  const hasMediaContext = frames.length > 0 || Boolean(media.audioTranscript) || Boolean(publicInfoText) || Boolean(sharedCommentText) || Boolean(commentText)
+  const mediaText = `${current || '[视频]'}\n媒体捕获状态：${mediaCaptureSummary({ ...media, frames })}\n${analysis ? `视频理解结果：${analysis}\n` : ''}${publicInfoText}${audioTranscript}${sharedCommentText}${commentText}${frames.length ? '以下是按时间顺序抽取的视频关键帧。先综合时间顺序、画面细节、字幕/屏幕文字、音频和公开页信息判断视频大概在表达什么，再只根据能确认的内容自然接话。低置信度时优先保守回应，不要编造。可以参考公开页评论判断大家的反应，但不要假装自己也发过评论。' : '优先根据可确认的文案和评论内容回复；没有画面证据时不要编造画面细节。作者名、用户名和平台来源标签不是内容，不要围绕它们接话，也不要声称没有加载、没有显示或要求对方截图。'}`
   const recent = history.slice(hasMediaContext ? -4 : -12).map((item) => ({
     role: item.role === 'me' ? 'assistant' : 'user',
     content: hasMediaContext ? item.text.slice(0, 160) : item.text,
@@ -770,6 +773,7 @@ class AiService {
         || media.audioTranscript
         || media.videoPageTitle
         || media.videoPageDescription
+        || media.videoSharedComment
         || media.videoComments.length
     )
     const providers = capturedFrames.length ? (frames.length ? visionProviders : configuredProviders) : configuredProviders

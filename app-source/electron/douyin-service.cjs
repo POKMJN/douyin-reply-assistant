@@ -3,6 +3,7 @@ const http = require('node:http')
 const https = require('node:https')
 const os = require('node:os')
 const path = require('node:path')
+const { createHash } = require('node:crypto')
 const { spawn } = require('node:child_process')
 const { BrowserWindow, session } = require('electron')
 
@@ -293,18 +294,19 @@ const normalizeCommentContext = (value = {}, limit = 5) => {
     videoPageTitle: String(source.title || source.videoPageTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120),
     videoPageAuthor: String(source.author || source.videoPageAuthor || '').replace(/\s+/g, ' ').trim().slice(0, 60),
     videoPageDescription: String(source.description || source.videoPageDescription || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+    videoSharedComment: String(source.sharedComment || source.videoSharedComment || '').replace(/\s+/g, ' ').trim().slice(0, 180),
     videoComments: comments,
-    videoCommentSource: String(source.source || ''),
-    videoCommentError: String(source.error || ''),
+    videoCommentSource: String(source.source || source.videoCommentSource || ''),
+    videoCommentError: String(source.error || source.videoCommentError || ''),
   }
 }
 
-const visibleMediaJunk = /^(?:分享|来自视频|播放|评论|写评论|发表评论|点赞|收藏|转发|打开抖音|点击查看|展开|收起|查看更多|全部评论|暂无评论|广告|举报)$/i
+const visibleMediaJunk = /^(?:分享|来自(?:视频|图文|图片|作品)|播放|评论|写评论|发表评论|点赞|收藏|转发|打开抖音|点击查看|展开|收起|查看更多|全部评论|暂无评论|广告|举报)$/i
 
 function normalizeVisibleMediaContext(value = {}, limit = 5) {
   const raw = typeof value === 'string'
     ? value
-    : String(value?.visibleText || value?.shareTitle || value?.text || '')
+    : String(value?.visibleText || value?.shareText || value?.shareTitle || value?.text || '')
   const maxComments = Math.max(0, Math.min(30, Math.floor(Number(limit) || 0)))
   const lines = raw
     .split(/[\r\n]+/)
@@ -313,7 +315,7 @@ function normalizeVisibleMediaContext(value = {}, limit = 5) {
     .filter((line, index, list) => list.indexOf(line) === index)
   const compact = lines.join(' ')
   const comments = []
-  let title = ''
+  let description = ''
   let afterCommentHeader = false
   let afterVideoLabel = false
 
@@ -330,15 +332,15 @@ function normalizeVisibleMediaContext(value = {}, limit = 5) {
       afterVideoLabel = false
       continue
     }
-    if (/来自视频/i.test(line)) {
-      const inlineTitle = line.replace(/^.*?来自视频\s*[:：]?\s*/i, '').trim()
-      if (inlineTitle && inlineTitle !== line && !visibleMediaJunk.test(inlineTitle)) title = inlineTitle.slice(0, 120)
+    if (/来自(?:视频|图文|图片|作品)/i.test(line)) {
+      const inlineDescription = line.replace(/^.*?来自(?:视频|图文|图片|作品)\s*[:：]?\s*/i, '').trim()
+      if (inlineDescription && inlineDescription !== line && !visibleMediaJunk.test(inlineDescription)) description = inlineDescription.slice(0, 500)
       afterVideoLabel = true
       afterCommentHeader = false
       continue
     }
-    if (afterVideoLabel && !title && !visibleMediaJunk.test(line)) {
-      title = line.slice(0, 120)
+    if (afterVideoLabel && !description && !visibleMediaJunk.test(line)) {
+      description = line.slice(0, 500)
       continue
     }
     if (afterCommentHeader) pushComment(line)
@@ -348,37 +350,48 @@ function normalizeVisibleMediaContext(value = {}, limit = 5) {
     const match = compact.match(/分享\s*@?.{1,48}?\s*的评论\s+(.{2,180}?)(?:\s+来自视频\s+(.{2,160}))?$/i)
     if (match) {
       pushComment(match[1])
-      if (!title && match[2]) title = match[2].replace(/\s+/g, ' ').trim().slice(0, 120)
+      if (!description && match[2]) description = match[2].replace(/\s+/g, ' ').trim().slice(0, 500)
     }
   }
 
   return {
-    videoPageTitle: title,
-    videoPageDescription: '',
+    videoPageTitle: '',
+    videoPageDescription: description,
+    videoSharedComment: comments[0] || '',
     videoComments: comments.slice(0, maxComments),
-    videoCommentSource: comments.length || title ? 'visible_card' : '',
+    videoCommentSource: comments.length || description ? 'visible_card' : '',
   }
 }
 
 function mergePublicMediaContext(publicContext = {}, visibleText = '', limit = 5) {
   const publicMeta = normalizeCommentContext(publicContext, limit)
   const visibleMeta = normalizeVisibleMediaContext(visibleText, limit)
+  const maxComments = Math.max(0, Math.min(30, Math.floor(Number(limit) || 0)))
+  const sharedComment = visibleMeta.videoSharedComment || publicMeta.videoSharedComment || ''
+  const mergedComments = [...new Set([
+    sharedComment,
+    ...publicMeta.videoComments,
+    ...visibleMeta.videoComments,
+  ].map((item) => String(item || '').replace(/\s+/g, ' ').trim()).filter((item) => item.length >= 2))].slice(0, maxComments)
   const author = publicMeta.videoPageAuthor
   const rawTitle = publicMeta.videoPageTitle
   const titleWithoutPlatform = rawTitle
     .replace(/\s*[-|｜·]\s*(?:抖音|Douyin).*$/i, '')
     .trim()
+  const normalizedAuthor = author.replace(/^@/, '').replace(/\s+/g, '').trim()
+  const normalizedTitle = titleWithoutPlatform.replace(/^@/, '').replace(/\s+/g, '').trim()
   const sourceOnlyTitle = !titleWithoutPlatform
     || /^(?:抖音|Douyin)(?:\s*[-|｜·].*)?$/i.test(titleWithoutPlatform)
-    || /^.{1,48}(?:的作品|的主页)$/i.test(titleWithoutPlatform)
-    || (author && titleWithoutPlatform.replace(/^@/, '') === author.replace(/^@/, ''))
+    || /^.{1,48}(?:的作品|的主页|的抖音)$/i.test(titleWithoutPlatform)
+    || (normalizedAuthor && normalizedTitle === normalizedAuthor)
   const publicTitle = sourceOnlyTitle ? '' : titleWithoutPlatform
 
   return {
     videoPageTitle: publicTitle || visibleMeta.videoPageTitle || '',
     videoPageAuthor: author,
     videoPageDescription: publicMeta.videoPageDescription || visibleMeta.videoPageDescription || '',
-    videoComments: publicMeta.videoComments.length ? publicMeta.videoComments : visibleMeta.videoComments,
+    videoSharedComment: sharedComment,
+    videoComments: mergedComments,
     videoCommentSource: publicMeta.videoCommentSource || visibleMeta.videoCommentSource || '',
     videoCommentError: publicMeta.videoCommentError || '',
     videoPageUrlFound: Boolean(publicContext?.videoPageUrlFound),
@@ -598,7 +611,38 @@ const normalizeHistoryMessage = (item) => ({
   text: String(item?.text || '').replace(/\s+/g, ' ').trim().slice(0, 500),
 })
 
+const MEDIA_MESSAGE_FINGERPRINT_SEPARATOR = '\u241e'
 const contactMessageKey = (contact) => String(contact?.messageKey || contact?.preview || '')
+const normalizeMessageFingerprintText = (value) => String(value || '')
+  .replace(/(?:刚刚|昨天|今天|星期[一二三四五六日天]|\d+(?:分钟|小时|天)前|\d{1,2}:\d{2}|\d{1,2}月\d{1,2}日)/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, 1200)
+const normalizeMessageFingerprintUrl = (value) => {
+  const text = String(value || '').trim()
+  if (!text || /^(?:blob:|data:)/i.test(text)) return ''
+  try {
+    const parsed = new URL(text, 'https://www.douyin.com')
+    return decodeURIComponent(parsed.pathname).replace(/\/+$/, '')
+  } catch (_) {
+    return text.split(/[?#]/, 1)[0]
+  }
+}
+function stableMessageFingerprint({ ids = [], urls = [], text = '', role = '', fallbackOrdinal = 0 } = {}) {
+  const stableIds = [...new Set((Array.isArray(ids) ? ids : []).map((value) => String(value || '').trim()).filter(Boolean))].sort()
+  const stableUrls = [...new Set((Array.isArray(urls) ? urls : []).map(normalizeMessageFingerprintUrl).filter(Boolean))].sort()
+  const stableText = normalizeMessageFingerprintText(text)
+  const stableParts = [String(role || ''), ...stableIds.map((value) => `id:${value}`), ...stableUrls.map((value) => `url:${value}`), `text:${stableText}`]
+  if (!stableIds.length && !stableUrls.length) stableParts.push(`ordinal:${Math.max(0, Number(fallbackOrdinal) || 0)}`)
+  const signature = stableParts.join('\u241f')
+  return signature.replace(/[\u241f:]/g, '').trim() ? `msg-${createHash('sha256').update(signature).digest('hex').slice(0, 20)}` : ''
+}
+const mediaMessageKey = (contact, fingerprint) => {
+  const preview = String(contact?.preview || '').trim()
+  const identity = String(fingerprint || '').trim()
+  return identity ? `${preview}${MEDIA_MESSAGE_FINGERPRINT_SEPARATOR}${identity}` : contactMessageKey(contact)
+}
+const isMediaMessageKey = (value, preview) => String(value || '').startsWith(`${String(preview || '').trim()}${MEDIA_MESSAGE_FINGERPRINT_SEPARATOR}`)
 
 const CONVERSATION_TIME_RE = /^(?:刚刚|昨天|今天|星期[一二三四五六日天]|\d{1,2}:\d{2}|\d+(?:分钟|小时|天)前|\d{1,2}月\d{1,2}日)$/
 
@@ -909,13 +953,26 @@ class DouyinService {
     }
   }
 
-  async readVideoCommentContext(media, name, options = {}) {
+  async readVideoCommentContext(media, name, options = {}, sourceWindow = null) {
     const limit = Math.max(0, Math.min(30, Math.floor(Number(options.commentLimit || 0) || 0)))
-    if (!limit || !media?.shareUrl) return {}
+    if (!limit) return {}
     const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
-    const win = this.ensureDiscoveryWindow()
+    const hasShareUrl = Boolean(media?.shareUrl)
+    const win = hasShareUrl ? this.ensureDiscoveryWindow() : sourceWindow
+    if (!win) return {}
     try {
-      await win.loadURL(media.shareUrl)
+      if (hasShareUrl) {
+        await win.loadURL(media.shareUrl)
+      } else {
+        const pageState = await win.webContents.executeJavaScript(`(() => {
+          const href = String(location.href || '')
+          const body = String(document.body?.innerText || '')
+          const isPublicVideo = /douyin\.com\/(?:video|note)\//i.test(href)
+            || /(?:全部评论|发布评论|展开\s*\d+\s*条回复)/i.test(body)
+          return { href, isPublicVideo }
+        })()`).catch(() => ({ isPublicVideo: false }))
+        if (!pageState?.isPublicVideo) return {}
+      }
       await sleep(Math.max(1800, Number(options.commentWaitMs || 3000)))
       await win.webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
@@ -993,10 +1050,10 @@ class DouyinService {
           titleFound: Boolean(normalized.videoPageTitle),
         })
       }
-      return { ...normalized, videoPageUrlFound: true }
+      return { ...normalized, videoPageUrlFound: Boolean(hasShareUrl || context?.source || sourceWindow) }
     } catch (error) {
       this.log('video_comments_unavailable', `${name} 视频评论未读取`, { name, error: error.message })
-      return { videoCommentError: error.message || 'video_comments_unavailable', videoPageUrlFound: Boolean(media?.shareUrl) }
+      return { videoCommentError: error.message || 'video_comments_unavailable', videoPageUrlFound: hasShareUrl }
     }
   }
 
@@ -1144,9 +1201,10 @@ class DouyinService {
         const fire = extractStreakCount(streakText, lines)
         const fromMe = lines.slice(1).some(l => /^你[：:]/.test(l.trim())) ? true : null
         const unreadNode = node.querySelector('[class*="unread" i], [data-e2e*="unread" i], [aria-label*="未读"]')
-        const unread = (unreadNode?.innerText || unreadNode?.textContent || unreadNode?.getAttribute('aria-label') || '').trim()
-        const messageKey = unread ? preview + '\u241f' + unread : preview
-        return { id: name, name, avatar: image?.src || '', fire, preview, messageKey, fromMe, sentAtLabel }
+        const unreadLabel = (unreadNode?.innerText || unreadNode?.textContent || unreadNode?.getAttribute('aria-label') || '').trim()
+        const unread = Boolean(unreadNode)
+        const messageKey = unread ? preview + '\u241f' + (unreadLabel || 'unread') : preview
+        return { id: name, name, avatar: image?.src || '', fire, preview, messageKey, unread, unreadLabel, fromMe, sentAtLabel }
       }).filter(Boolean)
     })()`)
     const savedContacts = this.storage.get().contacts || []
@@ -1199,6 +1257,73 @@ class DouyinService {
       await sleep(200)
     }
     throw new Error(`点击联系人后抖音没有打开右侧聊天面板：${name}`)
+  }
+
+  async captureLatestIncomingMessageIdentity(name, sourceWindow = null) {
+    const win = sourceWindow && !sourceWindow.isDestroyed?.() ? sourceWindow : await this.selectConversation(name)
+    await this.waitForEditor(win)
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const identity = await win.webContents.executeJavaScript(`(() => {
+        const rowSelector = ${JSON.stringify(CHAT_MESSAGE_ROW_SELECTOR)}
+        const mediaSelector = ${JSON.stringify(CHAT_MESSAGE_MEDIA_SELECTOR)}
+        const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
+        const editorRect = editor?.getBoundingClientRect()
+        const seen = new Set()
+        const rows = [...document.querySelectorAll(rowSelector + ', ' + mediaSelector)]
+          .map((node) => {
+            const row = node.closest(rowSelector)
+            if (!row || seen.has(row)) return null
+            seen.add(row)
+            const rect = row.getBoundingClientRect()
+            if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
+            let classes = ''
+            for (let current = row, depth = 0; current && depth < 5; current = current.parentElement, depth += 1) classes += ' ' + String(current.className || '')
+            const me = /isFromMe|MessageItemTextisFromMe/i.test(classes) || /(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(classes)
+            const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(classes)
+            const bubble = row.querySelector('[class*="content"], [class*="text"], [class*="bubble"], video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]') || row
+            return { row, rect, bubbleRect: bubble.getBoundingClientRect(), me, them }
+          })
+          .filter(Boolean)
+          .sort((left, right) => left.rect.top - right.rect.top)
+        const selected = rows.at(-1)
+        if (!selected) return null
+        const divider = editorRect ? editorRect.left + editorRect.width / 2 : innerWidth * 0.65
+        const role = selected.me ? 'me' : selected.them ? 'contact' : selected.bubbleRect.left + selected.bubbleRect.width / 2 > divider ? 'me' : 'contact'
+        const ids = []
+        const urls = []
+        const add = (target, value) => {
+          const normalized = String(value || '').replace(/\\s+/g, ' ').trim()
+          if (normalized) target.push(normalized.slice(0, 1200))
+        }
+        for (let current = selected.row, depth = 0; current && depth < 5; current = current.parentElement, depth += 1) {
+          for (const attr of ['data-message-id', 'data-msg-id', 'data-item-id', 'data-id']) add(ids, current.getAttribute?.(attr))
+        }
+        const nested = [selected.row, ...selected.row.querySelectorAll('a, video, source, img, [data-message-id], [data-msg-id], [data-item-id], [data-id], [data-url], [data-href]')].slice(0, 120)
+        for (const node of nested) {
+          for (const attr of ['href', 'src', 'poster', 'data-url', 'data-href']) add(urls, node.getAttribute?.(attr))
+          for (const attr of ['data-message-id', 'data-msg-id', 'data-item-id', 'data-id']) add(ids, node.getAttribute?.(attr))
+          if ('currentSrc' in node) add(urls, node.currentSrc)
+        }
+        const text = String(selected.row.innerText || selected.row.textContent || '').replace(/\\s+/g, ' ').trim()
+        const comparableText = text.replace(/(?:刚刚|昨天|今天|星期[一二三四五六日天]|\\d+(?:分钟|小时|天)前|\\d{1,2}:\\d{2}|\\d{1,2}月\\d{1,2}日)/g, ' ').replace(/\\s+/g, ' ').trim()
+        const fallbackOrdinal = rows.slice(0, -1).filter((item) => {
+          const itemText = String(item.row.innerText || item.row.textContent || '').replace(/(?:刚刚|昨天|今天|星期[一二三四五六日天]|\\d+(?:分钟|小时|天)前|\\d{1,2}:\\d{2}|\\d{1,2}月\\d{1,2}日)/g, ' ').replace(/\\s+/g, ' ').trim()
+          return itemText === comparableText
+        }).length
+        return {
+          role,
+          ids,
+          urls,
+          text,
+          fallbackOrdinal,
+          media: Boolean(selected.row.querySelector('video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]')),
+        }
+      })()`).catch(() => null)
+      const fingerprint = identity?.fingerprint || stableMessageFingerprint(identity || {})
+      if (fingerprint) return { ...identity, fingerprint }
+      if (attempt < 3) await sleep(250)
+    }
+    return null
   }
 
   // Capture the complete latest incoming media bubble. Douyin share cards often
@@ -1348,7 +1473,7 @@ class DouyinService {
     this.log(recognition.publicPageOnly === true ? 'video_public_context_attempted' : 'media_captured', recognition.publicPageOnly === true ? `已尝试读取 ${name} 的视频公开页文案和评论` : `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: shouldCaptureFrames && Boolean(media.posterUrl), strength: recognition.strength || 'standard', publicPageOnly: recognition.publicPageOnly === true })
     const [audioMeta, commentMeta] = await Promise.all([
       recognition.audio === false || recognition.publicPageOnly === true ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
-      this.readVideoCommentContext(media, name, recognition),
+      this.readVideoCommentContext(media, name, recognition, win),
     ])
     const mergedCommentMeta = mergePublicMediaContext(commentMeta, media.shareText || '', recognition.commentLimit || 5)
     if (recognition.publicPageOnly === true) {
@@ -2364,7 +2489,7 @@ class DouyinService {
       const aiDisabledContacts = new Set((config.aiDisabledContacts || []).map((name) => String(name).trim()).filter(Boolean))
       const canSend = (name) => !blacklist.has(name) && this.getSendAllowance(name).ok
       for (const contact of contacts) {
-        const currentMessageKey = contactMessageKey(contact)
+        let currentMessageKey = contactMessageKey(contact)
         const previous = this.lastSeen.get(contact.name)
         const hasPrevious = this.lastSeen.has(contact.name)
         if (!contact.preview) {
@@ -2387,9 +2512,33 @@ class DouyinService {
           continue
         }
         const reenabled = pendingInquiry ? false : this.blockedContacts.delete(contact.name)
+        const previewMediaKind = mediaPreviewKind(contact.preview)
+        const receivedAt = conversationTimeMeta(contact).sentAt
+        const receivedAtMs = receivedAt ? new Date(receivedAt).getTime() : Number.NaN
+        const recentlyReceived = Number.isFinite(receivedAtMs) && Date.now() - receivedAtMs <= 30 * 60_000
+        let incomingIdentity = null
+        const shouldInspectMediaIdentity = Boolean(previewMediaKind) && (
+          !hasPrevious
+          || Boolean(contact.unread)
+          || recentlyReceived
+          || !isMediaMessageKey(previous, contact.preview)
+        )
+        if (shouldInspectMediaIdentity) {
+          try {
+            incomingIdentity = await this.captureLatestIncomingMessageIdentity(contact.name)
+            if (incomingIdentity?.fingerprint) currentMessageKey = mediaMessageKey(contact, incomingIdentity.fingerprint)
+          } catch (_) {}
+        } else if (previewMediaKind && isMediaMessageKey(previous, contact.preview)) {
+          currentMessageKey = previous
+        }
         // Establish a baseline on the first sync so old conversations are not
         // answered unexpectedly after a fresh install or logout.
         if (!hasPrevious && !reenabled) {
+          this.lastSeen.set(contact.name, currentMessageKey)
+          continue
+        }
+        const legacyMediaKey = Boolean(previewMediaKind) && hasPrevious && !isMediaMessageKey(previous, contact.preview)
+        if (legacyMediaKey && incomingIdentity?.fingerprint && previous === contactMessageKey(contact) && !contact.unread && !recentlyReceived) {
           this.lastSeen.set(contact.name, currentMessageKey)
           continue
         }
@@ -2416,7 +2565,15 @@ class DouyinService {
         }
         // A positive list marker is useful, but its absence is not proof that
         // the latest message came from the contact. Verify in the chat view.
-        const fromMe = contact.fromMe === true ? true : bracketedPreview ? false : await this.isLastMessageFromMe(contact.name)
+        const fromMe = contact.fromMe === true
+          ? true
+          : incomingIdentity?.role === 'me'
+            ? true
+            : incomingIdentity?.role === 'contact'
+              ? false
+              : bracketedPreview
+                ? false
+                : await this.isLastMessageFromMe(contact.name)
         if (fromMe === true) {
           this.log('auto_skip', `${contact.name} 是自己发的，跳过`)
           this.lastSeen.set(contact.name, currentMessageKey)

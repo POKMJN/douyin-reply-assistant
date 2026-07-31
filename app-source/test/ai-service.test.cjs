@@ -20,7 +20,7 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain)
 }
 
-const { AiService, buildChatMessages, buildChatPrompt, buildLearningProfile, buildTurnGuidance, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, isNoReplyDecision, labelAiReply, normalizeVideoInput, replyQualityIssues, timeContext } = require('../electron/ai-service.cjs')
+const { AiService, buildChatMessages, buildChatPrompt, buildLearningProfile, buildTurnGuidance, buildVideoPrompt, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, isNoReplyDecision, labelAiReply, normalizeVideoInput, replyQualityIssues, timeContext } = require('../electron/ai-service.cjs')
 Module._load = originalLoad
 
 test('provider test and draft both call chat completions', async (t) => {
@@ -330,11 +330,13 @@ test('video prompts include public page comments when available', () => {
     videoReady: true,
     videoPageTitle: '早市小吃',
     videoPageDescription: '老板出摊做早餐',
+    videoSharedComment: '这也太真实了吧',
     videoComments: ['看起来好香', '这个摊我也去过'],
   })
   const messages = buildChatMessages({ name: '小明' }, '[视频]', media.frames, '', media)
 
   assert.match(messages.at(-1).content[0].text, /视频公开页信息：标题：早市小吃/)
+  assert.match(messages.at(-1).content[0].text, /当前分享的评论：这也太真实了吧/)
   assert.match(messages.at(-1).content[0].text, /视频公开页热评：1\. 看起来好香 \/ 2\. 这个摊我也去过/)
 })
 
@@ -354,6 +356,7 @@ test('video prompts do not expose source author names as reply topics', () => {
   assert.equal(typeof text, 'string')
   assert.match(text, /起码累着自己了/)
   assert.doesNotMatch(text, /xiang先生/)
+  assert.match(buildVideoPrompt({ name: '小明' }), /反讽、阴阳、玩梗或调侃/)
 })
 
 test('video drafts fall back to audio-only context when no vision model is configured', async (t) => {
