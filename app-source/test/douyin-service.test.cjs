@@ -7,7 +7,7 @@ Module._load = function (request, parent, isMain) {
   if (request === 'electron') return { BrowserWindow: class {}, session: {} }
   return originalLoad.call(this, request, parent, isMain)
 }
-const { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms } = require('../electron/douyin-service.cjs')
+const { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms } = require('../electron/douyin-service.cjs')
 Module._load = originalLoad
 
 const localDateKey = (value = new Date()) => {
@@ -137,6 +137,36 @@ test('public-page comment modes keep video replies text-only', async () => {
   assert.equal(context.videoComments.length, 30)
   assert.equal(context.videoPageDescription, '这是一条公开页文案')
   assert.equal(shouldUseVideoFrameFallback(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), { frames: [] }), false)
+})
+
+test('visible shared-comment cards preserve comment text without treating authors as titles', () => {
+  const cardText = [
+    '分享 @zmjjkk 的评论',
+    '起码累着自己了😍',
+    '来自视频',
+    '“我去，不早说” #冷知识 #生活小妙招',
+  ].join('\n')
+  const visible = normalizeVisibleMediaContext(cardText, 20)
+
+  assert.equal(visible.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.deepEqual(visible.videoComments, ['起码累着自己了😍'])
+  assert.equal(visible.videoCommentSource, 'visible_card')
+  const compactVisible = normalizeVisibleMediaContext(cardText.replace(/\n/g, ' '), 20)
+  assert.equal(compactVisible.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.deepEqual(compactVisible.videoComments, ['起码累着自己了😍'])
+  assert.deepEqual(normalizeVisibleMediaContext('xiang先生', 20).videoComments, [])
+  assert.equal(normalizeVisibleMediaContext('xiang先生', 20).videoPageTitle, '')
+
+  const merged = mergePublicMediaContext({
+    videoPageTitle: '',
+    videoPageAuthor: '',
+    videoPageDescription: '',
+    videoComments: [],
+    videoCommentError: 'public page unavailable',
+  }, cardText, 20)
+  assert.equal(merged.videoPageTitle, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.deepEqual(merged.videoComments, ['起码累着自己了😍'])
+  assert.equal(mergePublicMediaContext({ videoPageTitle: 'xiang先生的作品 - 抖音' }, 'xiang先生', 20).videoPageTitle, '')
 })
 
 test('public-page context can reply without frames or fallback capture', async () => {

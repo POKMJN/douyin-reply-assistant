@@ -247,6 +247,7 @@ function replyQualityIssues(reply, isVideo = false) {
     if (/\b(有趣|好笑|好看|好玩|有意思|不错|可以)\b/.test(text) && !/为什么|怎么|哪里|哈哈哈|笑死|离谱|绝了|淦|救命/.test(text)) issues.push('评价过于泛泛，没有具体细节')
     if (/^(哈哈|哈哈哈|hhhh|笑死)\s*$/.test(text)) issues.push('只有笑声没有内容')
     if (/\b视频\b/.test(text)) issues.push('提到了"视频"一词，不够自然')
+    if (/(?:没|未|无法|不能).{0,5}(?:加载|显示|弹出|读取|看见|看到)|(?:截|发)(?:个|张)?图|截图(?:发|给)我/i.test(text)) issues.push('声称媒体未加载或要求对方截图')
   }
   return issues
 }
@@ -314,6 +315,7 @@ function buildVideoPrompt(contact) {
 - 不要机械复述“视频里有……”，要像朋友随口回应。
 - 不要每句都用“这”或“这个”开头，也不要反复用它们泛指内容；整条回复最多使用一次，优先直接说具体的人、物、动作或感受。
 - 忽略抖音卡片 UI、左下角作者名/头像/水印、“来自视频”“分享自”等来源标签；这些不是视频内容本身，不要把作者名写进回复。
+- 绝对不要回复“视频没加载出来”“评论没显示”“截个图给我”等话；只能根据已提供的文案、评论、字幕、音频或画面接话。信息不足时宁可简短回应已知内容，不要讨论加载状态。
 - 不说明你在看截图，不使用 Markdown，不暴露 AI 身份。语气合适时可以自然带 1 个 emoji。
 - 看不清时不要编造具体人物、地点或事件；可以保守说“画面有点糊，感觉像……”或“后面那个点还挺逗”。
 - 避免标准句式：不要每次都“哈哈哈哈哈”“这也太……了吧”“我天”“救命”开头。每轮的回复开头和句式要不一样。
@@ -415,8 +417,13 @@ function normalizeVideoInput(value) {
     .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
     .filter(Boolean)
     .slice(0, 30)
+  const hasPublicContext = Boolean(
+    String(source.videoPageTitle || '').trim()
+      || String(source.videoPageDescription || '').trim()
+      || videoComments.length
+  )
   const confidence = String(source.confidence || (
-    !frames.length ? 'none' : detectedVideo ? (videoReady ? 'high' : 'low') : 'medium'
+    !frames.length ? (hasPublicContext ? 'medium' : 'none') : detectedVideo ? (videoReady ? 'high' : 'low') : 'medium'
   ))
   return {
     frames,
@@ -496,7 +503,6 @@ function buildChatMessages(contact, incoming, videoFrames, mediaAnalysis = '', m
   const audioTranscript = media.audioTranscript ? `视频音频转写：${media.audioTranscript}\n` : ''
   const publicInfo = [
     media.videoPageTitle ? `标题：${media.videoPageTitle}` : '',
-    media.videoPageAuthor ? `作者：${media.videoPageAuthor}` : '',
     media.videoPageDescription ? `文案：${media.videoPageDescription}` : '',
   ].filter(Boolean).join('；')
   const commentText = media.videoComments.length
@@ -504,7 +510,7 @@ function buildChatMessages(contact, incoming, videoFrames, mediaAnalysis = '', m
     : ''
   const publicInfoText = publicInfo ? `视频公开页信息：${publicInfo}\n` : ''
   const hasMediaContext = frames.length > 0 || Boolean(media.audioTranscript) || Boolean(publicInfoText) || Boolean(commentText)
-  const mediaText = `${current || '[视频]'}\n媒体捕获状态：${mediaCaptureSummary({ ...media, frames })}\n${analysis ? `视频理解结果：${analysis}\n` : ''}${publicInfoText}${audioTranscript}${commentText}${frames.length ? '以下是按时间顺序抽取的视频关键帧。先综合时间顺序、画面细节、字幕/屏幕文字、音频和公开页信息判断视频大概在表达什么，再只根据能确认的内容自然接话。低置信度时优先保守回应，不要编造。可以参考公开页评论判断大家的反应，但不要假装自己也发过评论。' : '根据可确认的视频音频、公开页信息或评论内容回复；没有画面证据时不要编造画面细节。'}`
+  const mediaText = `${current || '[视频]'}\n媒体捕获状态：${mediaCaptureSummary({ ...media, frames })}\n${analysis ? `视频理解结果：${analysis}\n` : ''}${publicInfoText}${audioTranscript}${commentText}${frames.length ? '以下是按时间顺序抽取的视频关键帧。先综合时间顺序、画面细节、字幕/屏幕文字、音频和公开页信息判断视频大概在表达什么，再只根据能确认的内容自然接话。低置信度时优先保守回应，不要编造。可以参考公开页评论判断大家的反应，但不要假装自己也发过评论。' : '优先根据可确认的文案和评论内容回复；没有画面证据时不要编造画面细节。作者名、用户名和平台来源标签不是内容，不要围绕它们接话，也不要声称没有加载、没有显示或要求对方截图。'}`
   const recent = history.slice(hasMediaContext ? -4 : -12).map((item) => ({
     role: item.role === 'me' ? 'assistant' : 'user',
     content: hasMediaContext ? item.text.slice(0, 160) : item.text,
@@ -757,6 +763,15 @@ class AiService {
     const capturedFrames = media.frames
     const visionProviders = capturedFrames.length ? configuredProviders.filter((item) => (item.capabilities || []).includes('vision')) : []
     const frames = capturedFrames.length && visionProviders.length ? capturedFrames : []
+    const hasMediaContext = Boolean(
+      media.mediaKind
+        || media.detectedVideo
+        || frames.length
+        || media.audioTranscript
+        || media.videoPageTitle
+        || media.videoPageDescription
+        || media.videoComments.length
+    )
     const providers = capturedFrames.length ? (frames.length ? visionProviders : configuredProviders) : configuredProviders
     if (capturedFrames.length && !frames.length && !media.audioTranscript) throw new Error('已收到图片或视频画面，但没有配置支持视觉识别的模型')
     const showAiModelLabel = config.settings?.showAiModelLabel !== false
@@ -815,7 +830,7 @@ class AiService {
 
     let text = cleanGeneratedText(rawReply)
     if (!text) throw new Error('模型没有生成有效回复')
-    const initialQualityIssues = replyQualityIssues(text, frames.length > 0)
+    const initialQualityIssues = replyQualityIssues(text, hasMediaContext)
     let rewritten = false
     if (initialQualityIssues.length) {
       try {
@@ -827,7 +842,7 @@ class AiService {
         ]
         const revised = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 80 }), { retries: 1, timeoutMs: 12000 })
         const revisedText = cleanGeneratedText(revised.choices?.[0]?.message?.content)
-        if (revisedText && replyQualityIssues(revisedText).length < initialQualityIssues.length) {
+        if (revisedText && replyQualityIssues(revisedText, hasMediaContext).length < initialQualityIssues.length) {
           text = revisedText
           rewritten = true
         }
@@ -836,7 +851,7 @@ class AiService {
       }
     }
     const label = aiLabel(provider)
-    this.storage.addLog({ type: 'ai_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 草稿`, detail: { elapsedMs: Date.now() - started, video: frames.length > 0, videoFrames: frames.length, mediaConfidence: media.confidence, mediaAnalysis: mediaAnalysis.text || '', model: provider.model, provider: provider.name, aiLabel: label, naturalRewrite: rewritten, qualityIssues: initialQualityIssues, timeContext: timeContext().label, incomingTime: contactWithTone._incomingMeta || {} } })
+    this.storage.addLog({ type: 'ai_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 草稿`, detail: { elapsedMs: Date.now() - started, video: hasMediaContext, videoFrames: frames.length, mediaConfidence: media.confidence, mediaAnalysis: mediaAnalysis.text || '', model: provider.model, provider: provider.name, aiLabel: label, naturalRewrite: rewritten, qualityIssues: initialQualityIssues, timeContext: timeContext().label, incomingTime: contactWithTone._incomingMeta || {} } })
     return { ok: true, text, labeledText: showAiModelLabel ? labelAiReply(text, provider) : text, model: provider.model, provider: provider.name, aiLabel: label, showAiModelLabel, elapsedMs: Date.now() - started }
   }
 

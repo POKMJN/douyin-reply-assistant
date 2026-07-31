@@ -298,6 +298,92 @@ const normalizeCommentContext = (value = {}, limit = 5) => {
     videoCommentError: String(source.error || ''),
   }
 }
+
+const visibleMediaJunk = /^(?:分享|来自视频|播放|评论|写评论|发表评论|点赞|收藏|转发|打开抖音|点击查看|展开|收起|查看更多|全部评论|暂无评论|广告|举报)$/i
+
+function normalizeVisibleMediaContext(value = {}, limit = 5) {
+  const raw = typeof value === 'string'
+    ? value
+    : String(value?.visibleText || value?.shareTitle || value?.text || '')
+  const maxComments = Math.max(0, Math.min(30, Math.floor(Number(limit) || 0)))
+  const lines = raw
+    .split(/[\r\n]+/)
+    .map((line) => String(line || '').replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length >= 2)
+    .filter((line, index, list) => list.indexOf(line) === index)
+  const compact = lines.join(' ')
+  const comments = []
+  let title = ''
+  let afterCommentHeader = false
+  let afterVideoLabel = false
+
+  const pushComment = (line) => {
+    const text = String(line || '').replace(/\s+/g, ' ').trim()
+    if (!text || text.length < 2 || visibleMediaJunk.test(text)) return
+    if (/^(?:分享\s*@?.{0,48}\s*的评论|来自视频)$/i.test(text)) return
+    if (!comments.some((item) => item === text || item.includes(text) || text.includes(item))) comments.push(text.slice(0, 180))
+  }
+
+  for (const line of lines) {
+    if (/分享\s*@?.{0,48}\s*的评论/i.test(line) || /分享\s*\[?\s*评论\s*\]?/i.test(line)) {
+      afterCommentHeader = true
+      afterVideoLabel = false
+      continue
+    }
+    if (/来自视频/i.test(line)) {
+      const inlineTitle = line.replace(/^.*?来自视频\s*[:：]?\s*/i, '').trim()
+      if (inlineTitle && inlineTitle !== line && !visibleMediaJunk.test(inlineTitle)) title = inlineTitle.slice(0, 120)
+      afterVideoLabel = true
+      afterCommentHeader = false
+      continue
+    }
+    if (afterVideoLabel && !title && !visibleMediaJunk.test(line)) {
+      title = line.slice(0, 120)
+      continue
+    }
+    if (afterCommentHeader) pushComment(line)
+  }
+
+  if (!comments.length) {
+    const match = compact.match(/分享\s*@?.{1,48}?\s*的评论\s+(.{2,180}?)(?:\s+来自视频\s+(.{2,160}))?$/i)
+    if (match) {
+      pushComment(match[1])
+      if (!title && match[2]) title = match[2].replace(/\s+/g, ' ').trim().slice(0, 120)
+    }
+  }
+
+  return {
+    videoPageTitle: title,
+    videoPageDescription: '',
+    videoComments: comments.slice(0, maxComments),
+    videoCommentSource: comments.length || title ? 'visible_card' : '',
+  }
+}
+
+function mergePublicMediaContext(publicContext = {}, visibleText = '', limit = 5) {
+  const publicMeta = normalizeCommentContext(publicContext, limit)
+  const visibleMeta = normalizeVisibleMediaContext(visibleText, limit)
+  const author = publicMeta.videoPageAuthor
+  const rawTitle = publicMeta.videoPageTitle
+  const titleWithoutPlatform = rawTitle
+    .replace(/\s*[-|｜·]\s*(?:抖音|Douyin).*$/i, '')
+    .trim()
+  const sourceOnlyTitle = !titleWithoutPlatform
+    || /^(?:抖音|Douyin)(?:\s*[-|｜·].*)?$/i.test(titleWithoutPlatform)
+    || /^.{1,48}(?:的作品|的主页)$/i.test(titleWithoutPlatform)
+    || (author && titleWithoutPlatform.replace(/^@/, '') === author.replace(/^@/, ''))
+  const publicTitle = sourceOnlyTitle ? '' : titleWithoutPlatform
+
+  return {
+    videoPageTitle: publicTitle || visibleMeta.videoPageTitle || '',
+    videoPageAuthor: author,
+    videoPageDescription: publicMeta.videoPageDescription || visibleMeta.videoPageDescription || '',
+    videoComments: publicMeta.videoComments.length ? publicMeta.videoComments : visibleMeta.videoComments,
+    videoCommentSource: publicMeta.videoCommentSource || visibleMeta.videoCommentSource || '',
+    videoCommentError: publicMeta.videoCommentError || '',
+    videoPageUrlFound: Boolean(publicContext?.videoPageUrlFound),
+  }
+}
 const localDateKey = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(value)
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -1171,9 +1257,9 @@ class DouyinService {
             return ''
           })()
           if (!mediaNode && !shareUrl) return null
-          const shareTitle = String(node.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120)
+          const shareText = String(node.innerText || '').replace(/\\r/g, '\n').trim().slice(0, 1000)
           const videoRect = video?.getBoundingClientRect()
-          return { node, rect, role, top: rect.top, video, videoCandidate, poster, videoUrl, videoRect, shareUrl, shareTitle }
+          return { node, rect, role, top: rect.top, video, videoCandidate, poster, videoUrl, videoRect, shareUrl, shareText }
         }).filter((item) => item && item.role === 'contact').sort((left, right) => left.top - right.top)
       const selected = rows.at(-1)
       if (!selected) return null
@@ -1187,7 +1273,7 @@ class DouyinService {
         duration: videoAfterScroll && Number.isFinite(videoAfterScroll.duration) ? videoAfterScroll.duration : 0,
         videoUrl: /^https?:\\/\\//i.test(selected.videoUrl || '') ? selected.videoUrl : '',
         shareUrl: /^https?:\\/\\//i.test(selected.shareUrl || '') ? selected.shareUrl : '',
-        shareTitle: selected.shareTitle || '',
+        shareText: selected.shareText || '',
         posterUrl: /^https?:\\/\\//i.test(selected.poster || '') ? selected.poster : '',
         videoRect: videoRectAfterScroll ? {
           x: Math.max(0, Math.floor(videoRectAfterScroll.x)),
@@ -1264,6 +1350,17 @@ class DouyinService {
       recognition.audio === false || recognition.publicPageOnly === true ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
       this.readVideoCommentContext(media, name, recognition),
     ])
+    const mergedCommentMeta = mergePublicMediaContext(commentMeta, media.shareText || '', recognition.commentLimit || 5)
+    if (recognition.publicPageOnly === true) {
+      this.log('video_public_context_ready', `已整理 ${name} 的视频文案和评论上下文`, {
+        name,
+        comments: mergedCommentMeta.videoComments.length,
+        titleFound: Boolean(mergedCommentMeta.videoPageTitle),
+        descriptionFound: Boolean(mergedCommentMeta.videoPageDescription),
+        source: mergedCommentMeta.videoCommentSource || '',
+        error: mergedCommentMeta.videoCommentError || '',
+      })
+    }
     const result = normalizeCapturedMedia({
       frames: frames.slice(0, maxFrames),
       maxFrames,
@@ -1273,13 +1370,12 @@ class DouyinService {
       videoReady: media.isVideo && decodedVideoFrames > 0,
       decodedVideoFrames,
       videoAddressFound: Boolean(media.videoUrl),
-      videoPageUrlFound: Boolean(media.shareUrl),
+      videoPageUrlFound: Boolean(media.shareUrl || mergedCommentMeta.videoPageUrlFound),
       posterFound: shouldCaptureFrames && Boolean(media.posterUrl),
       captureSource: 'message_bubble',
-      confidence: shouldCaptureFrames ? (media.isVideo ? (decodedVideoFrames > 0 ? 'high' : frames.length ? 'low' : 'none') : (frames.length ? 'medium' : 'none')) : (commentMeta.videoComments?.length || commentMeta.videoPageDescription || commentMeta.videoPageTitle ? 'medium' : 'none'),
+      confidence: shouldCaptureFrames ? (media.isVideo ? (decodedVideoFrames > 0 ? 'high' : frames.length ? 'low' : 'none') : (frames.length ? 'medium' : 'none')) : (mergedCommentMeta.videoComments.length || mergedCommentMeta.videoPageDescription || mergedCommentMeta.videoPageTitle ? 'medium' : 'none'),
       reason: shouldCaptureFrames ? (media.isVideo && decodedVideoFrames <= 0 ? 'video_not_decoded' : '') : 'public_page_only',
-      videoPageTitle: media.shareTitle || '',
-      ...commentMeta,
+      ...mergedCommentMeta,
       ...audioMeta,
     })
     return result
@@ -2530,4 +2626,4 @@ class DouyinService {
   }
 }
 
-module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, hasPublicMediaContext, isVideoPreview, mediaPreviewKind, mergeMessageHistory, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVideoRecognitionStrength, normalizeVideoShareCategories, normalizeVideoShareItems, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms }
+module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, hasPublicMediaContext, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionStrength, normalizeVideoShareCategories, normalizeVideoShareItems, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms }

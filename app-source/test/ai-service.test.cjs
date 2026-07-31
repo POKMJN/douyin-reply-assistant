@@ -196,6 +196,7 @@ test('reply quality checks catch mechanical chat patterns without rejecting norm
   assert.deepEqual(replyQualityIssues('笑死，后面那个停顿太绝了'), [])
   assert.match(replyQualityIssues('我理解你的感受，如果你愿意，我可以给你一些建议。你怎么看？还有别的吗？').join('、'), /客服腔或 AI 腔/)
   assert.match(replyQualityIssues('我理解你的感受，如果你愿意，我可以给你一些建议。你怎么看？还有别的吗？').join('、'), /连续追问/)
+  assert.match(replyQualityIssues('还是没显示出来，截个图吧', true).join('、'), /媒体未加载或要求对方截图/)
   assert.equal(cleanGeneratedText('```text\n那也太离谱了\n```'), '那也太离谱了')
   assert.equal(isNoReplyDecision('[不回复]'), true)
 })
@@ -335,6 +336,24 @@ test('video prompts include public page comments when available', () => {
 
   assert.match(messages.at(-1).content[0].text, /视频公开页信息：标题：早市小吃/)
   assert.match(messages.at(-1).content[0].text, /视频公开页热评：1\. 看起来好香 \/ 2\. 这个摊我也去过/)
+})
+
+test('video prompts do not expose source author names as reply topics', () => {
+  const media = normalizeVideoInput({
+    frames: [],
+    mediaKind: 'video',
+    detectedVideo: true,
+    videoReady: false,
+    videoPageAuthor: 'xiang先生',
+    videoComments: ['起码累着自己了😍'],
+    confidence: 'medium',
+  })
+  const messages = buildChatMessages({ name: '小明' }, '分享[评论]', media.frames, '', media)
+  const text = messages.at(-1).content
+
+  assert.equal(typeof text, 'string')
+  assert.match(text, /起码累着自己了/)
+  assert.doesNotMatch(text, /xiang先生/)
 })
 
 test('video drafts fall back to audio-only context when no vision model is configured', async (t) => {
