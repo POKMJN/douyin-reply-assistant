@@ -337,7 +337,7 @@ test('video prompts include public page comments when available', () => {
 
   assert.match(messages.at(-1).content[0].text, /视频公开页信息：标题：早市小吃/)
   assert.match(messages.at(-1).content[0].text, /当前分享的评论：这也太真实了吧/)
-  assert.match(messages.at(-1).content[0].text, /视频公开页热评：1\. 看起来好香 \/ 2\. 这个摊我也去过/)
+  assert.match(messages.at(-1).content[0].text, /视频公开页可参考评论（仅用于理解，不要在回复中提及评论来源）：1\. 看起来好香 \/ 2\. 这个摊我也去过/)
 })
 
 test('video prompts do not expose source author names as reply topics', () => {
@@ -357,6 +357,13 @@ test('video prompts do not expose source author names as reply topics', () => {
   assert.match(text, /起码累着自己了/)
   assert.doesNotMatch(text, /xiang先生/)
   assert.match(buildVideoPrompt({ name: '小明' }), /反讽、阴阳、玩梗或调侃/)
+})
+
+test('emoji guidance is opt-in per generated reply and comment source language is rejected', () => {
+  assert.match(buildVideoPrompt({ name: '小明', _allowEmoji: false }), /不要使用任何 emoji/)
+  assert.match(buildVideoPrompt({ name: '小明', _allowEmoji: true }), /可以视语气偶尔带 1 个自然的 emoji/)
+  assert.match(replyQualityIssues('评论区都说太好笑了', true).join('、'), /提及评论来源/)
+  assert.match(replyQualityIssues('太好笑了🤣', true, false).join('、'), /本次不需要使用表情/)
 })
 
 test('video drafts fall back to audio-only context when no vision model is configured', async (t) => {

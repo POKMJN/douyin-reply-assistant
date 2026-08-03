@@ -1,7 +1,7 @@
 {
   "name": "douyin-reply-console",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "本地运行的抖音私信与续火花控制台",
   "author": "续声",
   "type": "module",

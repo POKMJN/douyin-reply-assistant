@@ -36,10 +36,69 @@ const VIDEO_SHARE_CATEGORIES = [
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const normalizeEditorText = (text) => String(text || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim()
+function extractPublicCommentItemText(value) {
+  const lines = String(value || '')
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+  if (lines.length < 2) return ''
+
+  const startsAfterMenu = lines[1] === '...' || lines[1] === '\u2026'
+  const start = startsAfterMenu ? 2 : 1
+  const timeLine = /^(?:\u521a\u521a|\d+\s*(?:\u79d2(?:\u949f)?|\u5206\u949f|\u5c0f\u65f6|\u5929|\u5468|\u4e2a\u6708|\u6708|\u5e74)\u524d|\u6628\u5929|\u524d\u5929|\d{1,2}[-/.]\d{1,2}|(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2})(?:\s*[\u00b7\u2022]\s*.*)?$/
+  const end = lines.findIndex((line, index) => index >= start && timeLine.test(line))
+  const actionLine = /^(?:\d+(?:\.\d+)?[\u4e07wW]?|\u5206\u4eab|\u56de\u590d|\u5c55\u5f00\s*\d+\s*\u6761\u56de\u590d|\u6536\u8d77\u56de\u590d)$/
+  return lines
+    .slice(start, end >= 0 ? end : lines.length)
+    .filter((line) => !actionLine.test(line))
+    .join(' ')
+    .trim()
+}
+
+function extractReactAwemeId(root) {
+  if (!root) return ''
+  const validId = (value) => /^\d{17,20}$/.test(String(value || '')) ? String(value) : ''
+  const fromProps = (props) => {
+    const candidates = [
+      props?.message?.parsedContent,
+      props?.parsedContent,
+      props?.message?.content,
+      props?.item,
+      props?.aweme,
+      props,
+    ]
+    for (const value of candidates) {
+      if (!value || typeof value !== 'object') continue
+      for (const key of ['itemId', 'item_id', 'awemeId', 'aweme_id', 'groupId', 'group_id']) {
+        const id = validId(value[key])
+        if (id) return id
+      }
+      const sharedId = String(value.share_id || value.shareId || '').split('_').at(-1)
+      const id = validId(sharedId)
+      if (id) return id
+    }
+    return ''
+  }
+  const descendants = typeof root.querySelectorAll === 'function' ? [...root.querySelectorAll('*')] : []
+  for (const node of [root, ...descendants].slice(0, 160)) {
+    for (const key of Object.keys(node || {})) {
+      if (key.startsWith('__reactProps')) {
+        const id = fromProps(node[key])
+        if (id) return id
+      }
+      if (!key.startsWith('__reactFiber')) continue
+      for (let fiber = node[key], depth = 0; fiber && depth < 20; fiber = fiber.return, depth += 1) {
+        const id = fromProps(fiber.memoizedProps) || fromProps(fiber.pendingProps)
+        if (id) return id
+      }
+    }
+  }
+  return ''
+}
 const MAX_VIDEO_DOWNLOAD_BYTES = 200 * 1024 * 1024
 const AUDIO_TRANSCRIPTION_SECONDS = 90
-const CHAT_MESSAGE_ROW_SELECTOR = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"]'
-const CHAT_MESSAGE_MEDIA_SELECTOR = '[class*="sticker"], [class*="emoji"], [class*="imageMsg"], [class*="mediaMsg"], [class*="cardMsg"]'
+const CHAT_MESSAGE_ROW_SELECTOR = '[class*="MessageBoxContentrowBox"], [class*="messageMessageBoxcontentBox"], [class*="MessageBoxContentcolumnBox"], [data-e2e*="message-item"], [data-e2e*="messageItem"]'
+const CHAT_MESSAGE_MEDIA_SELECTOR = '[class*="sticker"], [class*="emoji"], [class*="imageMsg"], [class*="mediaMsg"], [class*="cardMsg"], [class*="ShareAweme" i]'
 
 function pickLatestChatMessageRole(candidates, { editorRect, innerWidth = 0 } = {}) {
   const divider = editorRect ? editorRect.left + (editorRect.width / 2) : innerWidth * 0.65
@@ -274,11 +333,11 @@ const normalizeVideoRecognitionStrength = (value) => {
 const videoRecognitionOptions = (settings = {}) => {
   const strength = normalizeVideoRecognitionStrength(settings.videoRecognitionStrength)
   const presets = {
-    light: { strength, maxFrames: 1, audio: false, commentLimit: 0, commentWaitMs: 0 },
-    standard: { strength, maxFrames: 3, audio: true, commentLimit: 3, commentWaitMs: 3000 },
-    deep: { strength, maxFrames: 9, audio: true, commentLimit: 12, commentWaitMs: 6500, frameDetail: 'high', imageMaxSize: 960, jpegQuality: 72 },
-    comments20: { strength, maxFrames: 0, audio: false, commentLimit: 20, commentWaitMs: 6500, commentScrolls: 4, publicPageOnly: true },
-    comments30: { strength, maxFrames: 0, audio: false, commentLimit: 30, commentWaitMs: 8500, commentScrolls: 6, publicPageOnly: true },
+    light: { strength, maxFrames: 1, audio: false, commentLimit: 0, commentWaitMs: 0, commentScrolls: 0, publicPageOnly: false },
+    standard: { strength, maxFrames: 3, audio: true, commentLimit: 3, commentWaitMs: 3000, commentScrolls: 1, publicPageOnly: false },
+    deep: { strength, maxFrames: 3, audio: true, commentLimit: 8, commentWaitMs: 5200, commentScrolls: 2, publicPageOnly: false },
+    comments20: { strength, maxFrames: 0, audio: false, commentLimit: 20, commentWaitMs: 3500, commentScrolls: 4, publicPageOnly: true },
+    comments30: { strength, maxFrames: 0, audio: false, commentLimit: 30, commentWaitMs: 4500, commentScrolls: 6, publicPageOnly: true },
   }
   return presets[strength] || presets.standard
 }
@@ -347,7 +406,7 @@ function normalizeVisibleMediaContext(value = {}, limit = 5) {
   }
 
   if (!comments.length) {
-    const match = compact.match(/分享\s*@?.{1,48}?\s*的评论\s+(.{2,180}?)(?:\s+来自视频\s+(.{2,160}))?$/i)
+    const match = compact.match(/分享\s*@?.{1,48}?\s*的评论\s+(.{2,180}?)(?:\s+来自视频\s+(.{2,500}))?$/i)
     if (match) {
       pushComment(match[1])
       if (!description && match[2]) description = match[2].replace(/\s+/g, ' ').trim().slice(0, 500)
@@ -380,10 +439,17 @@ function mergePublicMediaContext(publicContext = {}, visibleText = '', limit = 5
     .trim()
   const normalizedAuthor = author.replace(/^@/, '').replace(/\s+/g, '').trim()
   const normalizedTitle = titleWithoutPlatform.replace(/^@/, '').replace(/\s+/g, '').trim()
+  const visibleLines = String(visibleText || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const visibleAuthorOnly = visibleLines.length === 1
+    && visibleLines[0].length <= 60
+    && !/(?:分享|评论|来自视频|来自图文|#)/.test(visibleLines[0])
+    ? visibleLines[0].replace(/^@/, '').replace(/\s+/g, '').trim()
+    : ''
   const sourceOnlyTitle = !titleWithoutPlatform
     || /^(?:抖音|Douyin)(?:\s*[-|｜·].*)?$/i.test(titleWithoutPlatform)
     || /^.{1,48}(?:的作品|的主页|的抖音)$/i.test(titleWithoutPlatform)
     || (normalizedAuthor && normalizedTitle === normalizedAuthor)
+    || (visibleAuthorOnly && normalizedTitle.toLowerCase() === visibleAuthorOnly.toLowerCase())
   const publicTitle = sourceOnlyTitle ? '' : titleWithoutPlatform
 
   return {
@@ -717,7 +783,7 @@ const isVideoPreview = (value) => /(?:\[?视频\]?|发来一个视频|分享(?:�
 const mediaPreviewKind = (value) => {
   const text = String(value || '')
   if (isVideoPreview(text)) return 'video'
-  if (/(?:\[?媒体\]?|媒体卡片|分享\s*@|分享\s*\[?\s*评论\s*\]?|分享.{0,24}评论|来自视频)/i.test(text)) return 'share'
+  if (/(?:\[?媒体\]?|媒体卡片|分享\s*@|来自视频|分享\s*\[?\s*评论\s*\]?|分享(?:了)?评论)/i.test(text)) return 'share'
   if (/(?:\[?图集\]?|分享\[图集\]|相册)/i.test(text)) return 'album'
   if (/(?:\[?图片\]?|照片|photo|image)/i.test(text)) return 'image'
   if (/(?:\[?动图\]?|GIF)/i.test(text)) return 'gif'
@@ -726,31 +792,34 @@ const mediaPreviewKind = (value) => {
   return ''
 }
 
+const pureMediaPreviewPattern = /^(?:\[?\s*(?:视频|媒体|图集|图片|照片|动图|表情|GIF)\s*\]?|分享\s*@?[^\s，,。；;：:]{1,48}\s*的(?:作品|视频|评论)|分享\s*\[?\s*(?:视频|媒体|图集|图片|评论)\s*\]?|分享(?:了)?(?:视频|作品|评论|链接|商品|直播|音乐)|发来一个视频|发来了一段|视频卡片|媒体卡片|来自视频|播放|作品|[▶⏵]|\d{1,3}["秒]?)$/i
+const mediaMarkerPattern = /(?:\[?\s*(?:视频|媒体|图集|图片|照片|动图|表情|GIF)\s*\]?|分享\s*@?[^\s，,。；;：:]{1,48}\s*的(?:作品|视频|评论)|分享\s*\[?\s*(?:视频|媒体|图集|图片|评论)\s*\]?|分享(?:了)?(?:视频|作品|评论|链接|商品|直播|音乐)|发来一个视频|发来了一段|视频卡片|媒体卡片|来自视频|播放|作品|看这个|你看看|[▶⏵]|\d{1,3}["秒]?)/ig
+const hasReplyablePreviewText = (value) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text || pureMediaPreviewPattern.test(text)) return false
+  const remainder = text.replace(mediaMarkerPattern, '').replace(/\s+/g, '').trim()
+  return remainder.length > 0
+}
+
+const unavailableMediaReplyPattern = /(?:没|未|无法|不能).{0,8}(?:加载|显示|弹出|读取|看见|看到)|(?:看|读|加载|显示).{0,4}不到|(?:没|没有).{0,6}(?:内容|东西|画面)|(?:截|发)(?:个|张)?图|截图(?:发|给|看)/i
+const isUnavailableMediaReply = (value) => unavailableMediaReplyPattern.test(String(value || '').replace(/\s+/g, ' ').trim())
+
 const normalizeCapturedMedia = (value, hintedKind = '') => {
   const source = value && typeof value === 'object' ? value : {}
-  const frameLimit = Math.max(0, Math.min(9, Math.floor(Number(source.maxFrames ?? source.frameLimit ?? 3) || 0)))
   const frames = (Array.isArray(value) ? value : Array.isArray(source.frames) ? source.frames : [])
     .map((frame) => String(frame || '').trim())
     .filter((frame) => /^data:image\/(?:jpeg|png|webp);base64,/i.test(frame) || /^https?:\/\//i.test(frame))
-    .slice(0, frameLimit)
+    .slice(0, 3)
   const mediaKind = String(source.mediaKind || hintedKind || (source.detectedVideo ? 'video' : frames.length ? 'media' : '') || '')
   const decodedVideoFrames = Math.max(0, Math.floor(Number(source.decodedVideoFrames || 0) || 0))
   const detectedVideo = Boolean(source.detectedVideo || mediaKind === 'video')
   const videoReady = source.videoReady === true || decodedVideoFrames > 0
-  const hasPublicContext = Boolean(
-    String(source.videoPageTitle || source.title || '').trim()
-      || String(source.videoPageDescription || source.description || '').trim()
-      || (Array.isArray(source.videoComments) && source.videoComments.length)
-      || (Array.isArray(source.comments) && source.comments.length)
-  )
   const confidence = String(source.confidence || (
-    !frames.length ? (hasPublicContext ? 'medium' : 'none') : detectedVideo ? (videoReady ? 'high' : 'low') : mediaKind === 'share' ? 'medium' : 'medium'
+    !frames.length ? 'none' : detectedVideo ? (videoReady ? 'high' : 'low') : mediaKind === 'share' ? 'medium' : 'medium'
   ))
-  const commentContext = normalizeCommentContext(source, source.videoComments?.length || source.comments?.length || 0)
+  const commentContext = normalizeCommentContext(source, source.videoComments?.length || 0)
   return {
     frames,
-    maxFrames: frameLimit,
-    frameDetail: String(source.frameDetail || ''),
     mediaKind,
     detectedVideo,
     videoReady,
@@ -769,15 +838,6 @@ const normalizeCapturedMedia = (value, hintedKind = '') => {
   }
 }
 
-const modelMediaRect = (rect = {}, { stripBottom = true } = {}) => {
-  const x = Math.max(0, Math.floor(Number(rect.x ?? rect.left ?? 0) || 0))
-  const y = Math.max(0, Math.floor(Number(rect.y ?? rect.top ?? 0) || 0))
-  const width = Math.max(1, Math.ceil(Number(rect.width || 0) || 0))
-  const rawHeight = Math.max(1, Math.ceil(Number(rect.height || 0) || 0))
-  const height = stripBottom ? Math.max(1, Math.ceil(rawHeight * 0.84)) : rawHeight
-  return { x, y, width, height }
-}
-
 const hasPublicMediaContext = (media = {}) => Boolean(
   String(media.videoPageTitle || '').trim()
     || String(media.videoPageDescription || '').trim()
@@ -785,7 +845,8 @@ const hasPublicMediaContext = (media = {}) => Boolean(
 )
 
 const shouldUseVideoFrameFallback = (recognition = {}, mediaCapture = {}) => (
-  recognition.publicPageOnly !== true && !mediaCapture.frames?.length
+  !mediaCapture.frames?.length
+  && (recognition.publicPageOnly !== true || !hasPublicMediaContext(mediaCapture))
 )
 
 function extractConversationPreview(lines, explicitPreview = '', explicitStreak = '') {
@@ -884,28 +945,14 @@ class DouyinService {
     this.lastLimitNotice = new Map()
     this.lastSkipNotice = new Map()
     this.blockedContacts = new Set()
+    this._capturedVideoUrl = null
+    this._videoDetailIds = new Set()
+    this._detailListenerAttached = false
     const savedSeen = (this.storage?.get().lastSeenPairs || []).filter(p => Date.now() - p.at < 86400000)
     savedSeen.forEach(p => this.lastSeen.set(p.name, p.preview))
     const savedPairs = (this.storage?.get().lastSentPairs || []).filter(p => Date.now() - p.at < 86400000)
     this.lastSent = new Map(savedPairs.map(p => [p.name, p.text]))
-    this.lastSentAt = new Map(savedPairs.map(p => [p.name, Number(p.at) || Date.now()]))
     this.lastReplyTime = new Map()
-  }
-
-  persistLastSentPairs() {
-    if (!this.storage?.update) return
-    const now = Date.now()
-    const pairs = [...this.lastSent].map(([name, text]) => ({ name, text, at: this.lastSentAt.get(name) || now }))
-    this.storage.update({ lastSentPairs: pairs })
-  }
-
-  rememberSelfPreview(name, preview) {
-    const target = String(name || '').trim()
-    const text = String(preview || '').replace(/\s+/g, ' ').trim()
-    if (!target || !text) return
-    this.lastSent.set(target, text)
-    this.lastSentAt.set(target, Date.now())
-    this.persistLastSentPairs()
   }
 
   findFfmpegPath() {
@@ -956,7 +1003,6 @@ class DouyinService {
   async readVideoCommentContext(media, name, options = {}, sourceWindow = null) {
     const limit = Math.max(0, Math.min(30, Math.floor(Number(options.commentLimit || 0) || 0)))
     if (!limit) return {}
-    const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
     const hasShareUrl = Boolean(media?.shareUrl)
     const win = hasShareUrl ? this.ensureDiscoveryWindow() : sourceWindow
     if (!win) return {}
@@ -967,8 +1013,8 @@ class DouyinService {
         const pageState = await win.webContents.executeJavaScript(`(() => {
           const href = String(location.href || '')
           const body = String(document.body?.innerText || '')
-          const isPublicVideo = /douyin\.com\/(?:video|note)\//i.test(href)
-            || /(?:全部评论|发布评论|展开\s*\d+\s*条回复)/i.test(body)
+          const isPublicVideo = /douyin\\.com\\/(?:video|note)\\//i.test(href)
+            || /(?:全部评论|发布评论|展开\\s*\\d+\\s*条回复)/i.test(body)
           return { href, isPublicVideo }
         })()`).catch(() => ({ isPublicVideo: false }))
         if (!pageState?.isPublicVideo) return {}
@@ -993,44 +1039,44 @@ class DouyinService {
         if (target) target.click()
         return Boolean(target)
       })()`).catch(() => false)
-      await sleep(Math.max(600, Math.floor(Number(options.commentWaitMs || 3000) / 2)))
+      const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
       for (let index = 0; index < scrolls; index += 1) {
+        await sleep(Math.max(450, Math.floor(Number(options.commentWaitMs || 3000) / Math.max(2, scrolls + 1))))
         await win.webContents.executeJavaScript(`(() => {
           try {
             const scrollers = [...document.querySelectorAll('[class*="comment" i], [data-e2e*="comment" i], [role="dialog"], main, body')]
               .filter((node) => node && node.scrollHeight > node.clientHeight + 50)
               .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight))
             const target = scrollers[0] || document.scrollingElement || document.documentElement
-            target.scrollBy(0, Math.max(320, innerHeight * 0.55))
+            target.scrollBy(0, Math.max(320, innerHeight * 0.65))
           } catch {}
           return true
         })()`).catch(() => false)
-        await sleep(Math.max(350, Math.floor(Number(options.commentWaitMs || 3000) / (scrolls + 2))))
       }
-      const context = await win.webContents.executeJavaScript(`(() => {
+      await sleep(Math.max(500, Math.floor(Number(options.commentWaitMs || 3000) / 4)))
+      const context = await win.webContents.executeJavaScript(`(async () => {
         const limit = ${JSON.stringify(limit)}
-        const normalize = (value, max = 220) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max)
-        const meta = (selector) => normalize(document.querySelector(selector)?.content || document.querySelector(selector)?.getAttribute('content') || '', 180)
+        const normalize = (value, max = 500) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max)
+        const extractPublicCommentItemText = ${extractPublicCommentItemText.toString()}
+        const meta = (selector, max = 500) => normalize(document.querySelector(selector)?.content || document.querySelector(selector)?.getAttribute('content') || '', max)
         const title = normalize(meta('meta[property="og:title"]') || meta('meta[name="title"]') || document.title, 120)
-        const description = normalize(meta('meta[property="og:description"]') || meta('meta[name="description"]'), 500)
-        const author = normalize(document.querySelector('[data-e2e*="author"], [class*="author" i], [class*="user" i]')?.innerText || '', 60)
-        const bad = /(发表评论|写评论|输入评论|登录|扫码|打开抖音|点击查看|分享|收藏|点赞|展开|收起|回复|查看更多|全部评论|暂无评论|相关搜索|搜索|广告|举报)/i
+        const description = normalize(
+          meta('meta[property="og:description"]', 500)
+            || meta('meta[name="description"]', 500)
+            || document.querySelector('[data-e2e*="desc"], [class*="desc" i], [class*="caption" i], [class*="title" i]')?.innerText,
+          500
+        )
+        const author = normalize(document.querySelector('[data-e2e="video-author-name"], [data-e2e*="author-name"], [class*="authorName" i], [class*="author-name" i]')?.innerText || '', 60)
+        const bad = /^(?:发表评论|写评论|输入评论|登录|扫码|打开抖音|点击查看|分享|收藏|点赞|展开|收起|回复|查看更多|全部评论|暂无评论|相关搜索|搜索|广告|举报)$/i
         const textOf = (node) => normalize([
           node.innerText,
           node.getAttribute('aria-label'),
           node.getAttribute('title'),
         ].find(Boolean) || '', 180)
-        const selectors = [
-          '[data-e2e*="comment"]',
-          '[class*="comment" i]',
-          '[class*="reply" i]',
-          '[role="listitem"]',
-          'li',
-        ]
-        const nodes = [...new Set(selectors.flatMap((selector) => [...document.querySelectorAll(selector)]))]
         const comments = []
-        for (const node of nodes) {
-          const text = textOf(node)
+        const commentItems = [...document.querySelectorAll('[data-e2e="comment-item"]')]
+        for (const node of commentItems) {
+          const text = normalize(extractPublicCommentItemText(node.innerText), 180)
           if (text.length < 3 || text.length > 180) continue
           if (bad.test(text)) continue
           if (title && (text === title || title.includes(text))) continue
@@ -1040,9 +1086,50 @@ class DouyinService {
           comments.push(text)
           if (comments.length >= limit) break
         }
-        return { title, description, author, comments, source: location.href }
+        if (!comments.length) {
+          const fallbackSelectors = [
+            '[data-e2e*="comment-content"]',
+            '[data-e2e*="comment-text"]',
+            '[class*="comment-content" i]',
+            '[class*="comment-text" i]',
+          ]
+          const nodes = [...new Set(fallbackSelectors.flatMap((selector) => [...document.querySelectorAll(selector)]))]
+          for (const node of nodes) {
+            const text = textOf(node)
+            if (text.length < 3 || text.length > 180 || bad.test(text)) continue
+            if (title && (text === title || title.includes(text))) continue
+            if (description && description.includes(text) && text.length < 12) continue
+            if (/^\\d+$/.test(text) || /^[\\d.万wW]+$/.test(text)) continue
+            if (comments.some((item) => item === text || item.includes(text) || text.includes(item))) continue
+            comments.push(text)
+            if (comments.length >= limit) break
+          }
+        }
+        const apiComments = []
+        const commentUrls = [...new Set(performance.getEntriesByType('resource')
+          .map((entry) => String(entry.name || ''))
+          .filter((url) => /aweme\\/v1\\/web\\/comment\\/list\\//i.test(url)))]
+        for (const url of commentUrls.slice(-Math.max(2, Math.ceil(limit / 5) + 2))) {
+          try {
+            const response = await fetch(url, { credentials: 'include' })
+            if (!response.ok) continue
+            const payload = await response.json()
+            for (const item of (Array.isArray(payload?.comments) ? payload.comments : [])) {
+              const text = normalize(item?.text || item?.comment_text || item?.content || '', 180)
+              if (text.length >= 2 && !apiComments.includes(text)) apiComments.push(text)
+              if (apiComments.length >= limit) break
+            }
+          } catch {}
+          if (apiComments.length >= limit) break
+        }
+        return { title, description, author, apiComments, comments, source: location.href }
       })()`).catch((error) => ({ error: error.message }))
-      const normalized = normalizeCommentContext(context, limit)
+      const normalized = normalizeCommentContext({
+        ...context,
+        comments: Array.isArray(context?.apiComments) && context.apiComments.length
+          ? context.apiComments
+          : context?.comments,
+      }, limit)
       if (normalized.videoComments.length || normalized.videoPageTitle || normalized.videoPageDescription) {
         this.log('video_comments_captured', `已读取 ${name} 的视频公开页评论`, {
           name,
@@ -1081,17 +1168,64 @@ class DouyinService {
     })
     // Douyin pages sometimes advertise a Windows-only `bytedance:` deep link.
     // It is not needed for web automation and Windows otherwise shows a Store dialog.
+    // Video/note pages must never replace the chat page in the main window:
+    // opening them there strands the automation on a page with no editor/send
+    // button. Discovery work is delegated to the hidden discovery window instead.
+    const isVideoDetailUrl = (url) => /^https?:\/\/[^/]*douyin\.com\/(?:video|note)\//i.test(String(url || ''))
+    this._capturedVideoUrl = null
+    const captureVideoUrl = (url) => {
+      if (isVideoDetailUrl(url)) {
+        this._capturedVideoUrl = url
+        return true
+      }
+      return false
+    }
     this.window.webContents.on('will-navigate', (event, url) => {
-      if (/^bytedance:/i.test(url)) event.preventDefault()
+      if (/^bytedance:/i.test(url) || captureVideoUrl(url)) event.preventDefault()
     })
     this.window.webContents.on('will-redirect', (event, url) => {
-      if (/^bytedance:/i.test(url)) event.preventDefault()
+      if (/^bytedance:/i.test(url) || captureVideoUrl(url)) event.preventDefault()
     })
     this.window.webContents.on('will-frame-navigate', (event, details) => {
-      if (/^bytedance:/i.test(details.url)) event.preventDefault()
+      if (/^bytedance:/i.test(details.url) || captureVideoUrl(details.url)) event.preventDefault()
     })
     this.window.webContents.setWindowOpenHandler(({ url }) => {
-      return /^bytedance:/i.test(url) ? { action: 'deny' } : { action: 'allow' }
+      if (/^bytedance:/i.test(url) || captureVideoUrl(url)) return { action: 'deny' }
+      return { action: 'allow' }
+    })
+    // 抖音网页版聊天点击分享卡片后，视频详情通过 XHR 拉取（不导航、也不挂
+    // window 全局变量）。监听详情 API 响应，从 URL 或响应体里提取 aweme_id，
+    // 用于拼公开页地址交给独立 discovery 窗口抓取。
+    this._videoDetailIds = new Set()
+    const captureDetailId = (url) => {
+      const id = String(url || '').match(/aweme_id[=/\-](\d{10,20})|aweme\/v1\/web\/aweme\/detail\/(\d{10,20})|video\/(\d{10,20})|note\/(\d{10,20})/i)
+      if (id) {
+        const found = id[1] || id[2] || id[3] || id[4]
+        if (found) {
+          this._videoDetailIds.add(found)
+          if (!this._capturedVideoUrl) this._capturedVideoUrl = 'https://www.douyin.com/video/' + found
+          return found
+        }
+      }
+      return ''
+    }
+    const attachDetailListener = () => {
+      const session = this.window.webContents.session
+      if (this._detailListenerAttached) return
+      this._detailListenerAttached = true
+      session.webRequest.onBeforeRequest({ urls: ['*://*.douyin.com/*', '*://*.amemv.com/*', '*://*.douyinpic.com/*'] }, (details, callback) => {
+        if (/aweme\/v1\/web\/aweme\/detail|aweme\/v1\/web\/comment|aweme\/detail/i.test(details.url)) {
+          captureDetailId(details.url)
+        }
+        callback({})
+      })
+    }
+    attachDetailListener()
+    this.window.on('closed', () => { this._detailListenerAttached = false })
+    // 抖音聊天消息通过 WebSocket 长连接推送，必须在页面加载时注入 hook，
+    // 否则会话切换后已建立的连接抓不到消息帧。
+    this.window.webContents.on('did-finish-load', () => {
+      this.injectMessageCaptureHook(this.window)
     })
     this.window.on('close', (event) => {
       if (!this.window.__forceClose) {
@@ -1101,6 +1235,171 @@ class DouyinService {
     })
     this.window.loadURL(CHAT_URL)
     return this.window
+  }
+
+  // 在抖音页面上下文里 hook WebSocket / fetch / XHR，捕获聊天消息数据里的
+  // aweme_id（含视频标题、作者、文案），供 publicPageOnly 模式零点击提取，
+  // 之后交给独立 discovery 窗口抓取完整文案和评论。
+  async injectMessageCaptureHook(win) {
+    if (!win || win.isDestroyed?.()) return false
+    try {
+      return await win.webContents.executeJavaScript(`(() => {
+        if (window.__xushengFetchHook) return true
+        window.__xushengVideoIds = []
+        window.__xushengVideoInfo = new Map()
+        const collect = (text) => {
+          try {
+            const data = JSON.parse(String(text || ''))
+            const walk = (value) => {
+              if (!value || typeof value !== 'object') return
+              if (Array.isArray(value)) { value.forEach(walk); return }
+              if (typeof value.aweme_id === 'string' && /^\\d{10,20}$/.test(value.aweme_id)) {
+                const id = value.aweme_id
+                if (!window.__xushengVideoIds.includes(id)) window.__xushengVideoIds.push(id)
+                const shareInfo = value.share_info || value.shareInfo || value.share || {}
+                const author = String(
+                  value.author?.nickname
+                  || value.author?.name
+                  || value.authorName
+                  || value.nickname
+                  || value.user?.nickname
+                  || value.user_name
+                  || shareInfo.share_author
+                  || shareInfo.author
+                  || value.author?.user?.nickname
+                  || ''
+                ).trim().slice(0, 60)
+                const desc = String(
+                  value.desc
+                  || value.title
+                  || shareInfo.share_title
+                  || shareInfo.title
+                  || shareInfo.share_desc
+                  || value.content
+                  || ''
+                ).trim().slice(0, 500)
+                const covers = []
+                const addCover = (candidate) => {
+                  if (Array.isArray(candidate)) {
+                    candidate.forEach(addCover)
+                    return
+                  }
+                  const url = String(candidate?.url || candidate || '').trim()
+                  if (/^https?:\\/\\//i.test(url) && !covers.includes(url)) covers.push(url.slice(0, 800))
+                }
+                addCover(value.video?.cover?.url_list)
+                addCover(value.video?.origin_cover?.url_list)
+                addCover(value.video?.dynamic_cover?.url_list)
+                addCover(value.cover?.url_list)
+                addCover(value.cover_url?.url_list)
+                addCover(value.images?.flatMap?.((image) => image?.url_list || []))
+                window.__xushengVideoInfo.set(id, {
+                  desc,
+                  author,
+                  title: String(value.title || shareInfo.share_title || '').slice(0, 120),
+                  covers: covers.slice(0, 12),
+                  stats: value.statistics || null,
+                  at: Date.now(),
+                })
+              }
+              for (const key of Object.keys(value)) {
+                if (key === 'aweme_id' && typeof value.aweme_id === 'string' && /^\\d{10,20}$/.test(value.aweme_id)) continue
+                walk(value[key])
+              }
+            }
+            walk(data)
+          } catch {}
+        }
+        const decodeData = (data) => {
+          // WebSocket 帧可能是文本、Blob 或 ArrayBuffer
+          if (typeof data === 'string') return data
+          if (data instanceof ArrayBuffer) { try { return new TextDecoder().decode(data) } catch {} }
+          if (ArrayBuffer.isView(data)) { try { return new TextDecoder().decode(data.buffer, { stream: true }) } catch {} }
+          if (typeof Blob !== 'undefined' && data instanceof Blob) {
+            try {
+              // 同步拿不到 Blob 内容，异步处理
+              data.text().then((t) => collect(t)).catch(() => {})
+              return ''
+            } catch {}
+          }
+          return ''
+        }
+        const OriginalWebSocket = window.WebSocket
+        if (OriginalWebSocket) {
+          window.WebSocket = function (...args) {
+            const socket = new OriginalWebSocket(...args)
+            try {
+              const originalAddEventListener = socket.addEventListener.bind(socket)
+              socket.addEventListener = (type, listener, options) => {
+                if (type === 'message') {
+                  return originalAddEventListener(type, (event) => {
+                    try { collect(decodeData(event.data)) } catch {}
+                    if (typeof listener === 'function') listener(event)
+                  }, options)
+                }
+                return originalAddEventListener(type, listener, options)
+              }
+              // onmessage 访问器定义在原型上，实例级覆盖不生效，
+              // 因此统一走 addEventListener 捕获；若页面用 onmessage 赋值，
+              // 通过包装原型访问器补捕获。
+            } catch {}
+            return socket
+          }
+          window.WebSocket.prototype = OriginalWebSocket.prototype
+          const originalProtoDescriptor = Object.getOwnPropertyDescriptor(OriginalWebSocket.prototype, 'onmessage')
+          if (originalProtoDescriptor) {
+            Object.defineProperty(window.WebSocket.prototype, 'onmessage', {
+              set(value) {
+                if (typeof value === 'function') {
+                  this.__xushengUserOnMessage = value
+                  const handler = (event) => {
+                    try { collect(decodeData(event.data)) } catch {}
+                    if (typeof this.__xushengUserOnMessage === 'function') this.__xushengUserOnMessage(event)
+                  }
+                  if (originalProtoDescriptor.set) originalProtoDescriptor.set.call(this, handler)
+                  else this.addEventListener('message', handler)
+                } else if (originalProtoDescriptor.set) {
+                  originalProtoDescriptor.set.call(this, value)
+                }
+              },
+              get() {
+                if (originalProtoDescriptor.get) return originalProtoDescriptor.get.call(this)
+                return this.__xushengUserOnMessage || null
+              },
+              configurable: true,
+            })
+          }
+          Object.setPrototypeOf(window.WebSocket, OriginalWebSocket)
+        }
+        const originalFetch = window.fetch
+        if (originalFetch) {
+          window.fetch = async (...args) => {
+            const response = await originalFetch(...args)
+            try {
+              const cloned = response.clone()
+              cloned.text().then(collect).catch(() => {})
+            } catch {}
+            return response
+          }
+        }
+        const originalOpen = XMLHttpRequest.prototype.open
+        const originalSend = XMLHttpRequest.prototype.send
+        XMLHttpRequest.prototype.open = function (...args) {
+          this.__xushengUrl = String(args[1] || '')
+          return originalOpen.apply(this, args)
+        }
+        XMLHttpRequest.prototype.send = function (...args) {
+          if (this.__xushengUrl && /douyin\\.com|amemv\\.com/i.test(this.__xushengUrl)) {
+            this.addEventListener('load', () => { try { collect(this.responseText) } catch {} })
+          }
+          return originalSend.apply(this, args)
+        }
+        window.__xushengFetchHook = true
+        return true
+      })()`)
+    } catch {
+      return false
+    }
   }
 
   ensureDiscoveryWindow() {
@@ -1141,7 +1440,6 @@ class DouyinService {
     if (this.window && !this.window.isDestroyed()) await this.window.loadURL(CHAT_URL)
     this.lastSeen.clear()
     this.lastSent.clear()
-    this.lastSentAt.clear()
     this.emitEvent('status', await this.getStatus())
     return { ok: true }
   }
@@ -1214,6 +1512,9 @@ class DouyinService {
       ...(savedByName.get(contact.name) || {}),
       ...contact,
     }))
+    if (this.storage?.update && (mergedContacts.length || !savedContacts.length)) {
+      this.storage.update({ contacts: mergedContacts })
+    }
     this.emitEvent('contacts', { contacts: mergedContacts })
     return { ok: true, contacts: mergedContacts }
   }
@@ -1266,6 +1567,7 @@ class DouyinService {
       const identity = await win.webContents.executeJavaScript(`(() => {
         const rowSelector = ${JSON.stringify(CHAT_MESSAGE_ROW_SELECTOR)}
         const mediaSelector = ${JSON.stringify(CHAT_MESSAGE_MEDIA_SELECTOR)}
+        document.querySelectorAll('[data-xusheng-latest-message]').forEach((node) => node.removeAttribute('data-xusheng-latest-message'))
         const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
         const editorRect = editor?.getBoundingClientRect()
         const seen = new Set()
@@ -1281,7 +1583,8 @@ class DouyinService {
             const me = /isFromMe|MessageItemTextisFromMe/i.test(classes) || /(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(classes)
             const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(classes)
             const bubble = row.querySelector('[class*="content"], [class*="text"], [class*="bubble"], video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]') || row
-            return { row, rect, bubbleRect: bubble.getBoundingClientRect(), me, them }
+            const bubbleRect = bubble.getBoundingClientRect()
+            return { row, rect, bubbleRect, me, them }
           })
           .filter(Boolean)
           .sort((left, right) => left.rect.top - right.rect.top)
@@ -1289,6 +1592,7 @@ class DouyinService {
         if (!selected) return null
         const divider = editorRect ? editorRect.left + editorRect.width / 2 : innerWidth * 0.65
         const role = selected.me ? 'me' : selected.them ? 'contact' : selected.bubbleRect.left + selected.bubbleRect.width / 2 > divider ? 'me' : 'contact'
+        selected.row.setAttribute('data-xusheng-latest-message', role)
         const ids = []
         const urls = []
         const add = (target, value) => {
@@ -1319,7 +1623,11 @@ class DouyinService {
           media: Boolean(selected.row.querySelector('video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]')),
         }
       })()`).catch(() => null)
-      const fingerprint = identity?.fingerprint || stableMessageFingerprint(identity || {})
+      if (!identity) {
+        if (attempt < 3) await sleep(250)
+        continue
+      }
+      const fingerprint = identity.fingerprint || stableMessageFingerprint(identity)
       if (fingerprint) return { ...identity, fingerprint }
       if (attempt < 3) await sleep(250)
     }
@@ -1331,24 +1639,39 @@ class DouyinService {
   // <img> or <video> alone can capture an avatar or a sticker instead.
   async captureLatestIncomingMedia(name, recognitionOptions = {}) {
     const recognition = { ...videoRecognitionOptions(this.storage.get().settings || {}), ...(recognitionOptions || {}) }
-    const maxFrames = Math.max(0, Math.min(9, Math.floor(Number(recognition.maxFrames ?? 3) || 0)))
+    const maxFrames = Math.max(0, Math.min(3, Math.floor(Number(recognition.maxFrames ?? 3) || 0)))
     const shouldCaptureFrames = maxFrames > 0 && recognition.publicPageOnly !== true
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
+    // 消息捕获 hook 在页面加载时已注入（见 ensureWindow），这里幂等兜底。
+    await this.injectMessageCaptureHook(win)
     const media = await win.webContents.executeJavaScript(`(() => {
       document.querySelectorAll('[data-xusheng-media-capture]').forEach((node) => node.removeAttribute('data-xusheng-media-capture'))
       const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
-      const selector = '[class*="MessageItem"], [class*="messageItem"], [data-e2e*="message-item"], [data-e2e*="messageItem"], [class*="sticker"], [class*="emoji"], [class*="imageMsg"], [class*="mediaMsg"], [class*="cardMsg"]'
-      const all = [...document.querySelectorAll(selector)]
-      const rows = all.filter((node) => !all.some((parent) => parent !== node && parent.contains(node)))
+      const rowSelector = ${JSON.stringify(CHAT_MESSAGE_ROW_SELECTOR)}
+      const mediaSelector = ${JSON.stringify(CHAT_MESSAGE_MEDIA_SELECTOR)}
+      const extractReactAwemeId = ${extractReactAwemeId.toString()}
+      const markedRow = document.querySelector('[data-xusheng-latest-message="contact"]')
+      const seen = new Set()
+      const all = markedRow
+        ? [markedRow]
+        : [...document.querySelectorAll(rowSelector + ', ' + mediaSelector)]
+            .map((node) => node.closest(rowSelector))
+            .filter((node) => node && !seen.has(node) && seen.add(node))
+      const rows = all
         .map((node) => {
           const rect = node.getBoundingClientRect()
           let signature = ''
           for (let parent = node, depth = 0; parent && depth < 6; parent = parent.parentElement, depth += 1) signature += ' ' + String(parent.className || '')
           const selfByClass = /MessageItemTextisFromMe|isFromMe|(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(signature)
           const contactByClass = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(signature)
-          const mediaNode = node.querySelector('video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]')
+          const mediaNode = [...node.querySelectorAll('video, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i], img')].find((candidate) => {
+            const candidateRect = candidate.getBoundingClientRect()
+            let candidateClasses = ''
+            for (let current = candidate, depth = 0; current && current !== node && depth < 4; current = current.parentElement, depth += 1) candidateClasses += ' ' + String(current.className || '')
+            return candidateRect.width >= 64 && candidateRect.height >= 44 && !/avatar|userhead|headimage|profilephoto/i.test(candidateClasses)
+          })
           if (!rect.width || !rect.height || rect.bottom <= 0 || rect.top >= innerHeight) return null
           const roleNode = mediaNode || node
           const mediaRect = roleNode.getBoundingClientRect()
@@ -1360,6 +1683,8 @@ class DouyinService {
           const poster = video?.poster || node.querySelector('img')?.currentSrc || node.querySelector('img')?.src || ''
           const videoUrl = video?.currentSrc || video?.src || video?.querySelector('source')?.src || ''
           const shareUrl = (() => {
+            const reactAwemeId = extractReactAwemeId(node)
+            if (reactAwemeId) return 'https://www.douyin.com/video/' + reactAwemeId
             const urlPattern = /(?:https?:\\/\\/v\\.douyin\\.com\\/[^\\s"'<>]+|https?:\\/\\/[^\\s"'<>]*douyin\\.com\\/(?:video|note|share)\\/[^\\s"'<>]+|\\/video\\/\\d+|\\/note\\/\\d+|\\/share\\/[^\\s"'<>]+)/i
             const values = []
             const collect = (item) => {
@@ -1367,24 +1692,64 @@ class DouyinService {
               const match = text.match(urlPattern)
               if (match) values.push(match[0])
             }
-            const nodes = [node, ...node.querySelectorAll('*')]
+            // 视频卡片常被 <a href> 包裹，链接可能挂在外层祖先上：向上扫描到 body。
+            const ancestors = []
+            for (let parent = node.parentElement, depth = 0; parent && parent !== document.body && depth < 12; parent = parent.parentElement, depth += 1) ancestors.push(parent)
+            const nodes = [node, ...node.querySelectorAll('*'), ...ancestors]
             for (const item of nodes) {
-              for (const attr of ['href', 'src', 'data-href', 'data-url', 'data-share-url', 'data-video-url', 'data-item-url', 'data-link', 'aria-label', 'title']) {
+              for (const attr of ['href', 'src', 'data-href', 'data-url', 'data-share-url', 'data-video-url', 'data-item-url', 'data-link', 'data-id', 'data-item-id', 'data-aweme-id', 'data-video-id', 'data-group-id', 'data-e2e', 'aria-label', 'title']) {
                 collect(item.getAttribute?.(attr))
               }
               collect(item.dataset ? Object.values(item.dataset).join(' ') : '')
             }
             collect(node.innerText)
             collect(node.outerHTML)
+            // 没有完整链接时，尝试从 id 类属性拼出公开页 URL（videoId 通常 ≥ 8 位数字）。
+            for (const item of nodes) {
+              for (const attr of ['data-id', 'data-item-id', 'data-aweme-id', 'data-video-id', 'data-group-id']) {
+                const id = String(item.getAttribute?.(attr) || '').match(/\\d{8,}/)?.[0]
+                if (id) values.push('https://www.douyin.com/video/' + id)
+              }
+            }
+            // video/note 详情页链接有时藏在图片 URL 或播放地址的参数里，
+            // 或在页面其它可点击元素上（如分享卡片的跳转 <a>）。兜底收集。
+            if (!values.length) {
+              const extra = [...document.querySelectorAll('a[href*="douyin.com"], a[href*="v.douyin.com"], [data-e2e*="video" i], [data-e2e*="aweme" i], [data-e2e*="share" i]')]
+              for (const item of extra) {
+                for (const attr of ['href', 'data-href', 'data-url', 'data-share-url', 'data-video-url', 'data-item-url', 'data-e2e', 'aria-label', 'title']) {
+                  collect(item.getAttribute?.(attr))
+                }
+              }
+            }
+            // 封面 div 的背景图 URL 常带 aweme_id 参数（如 ...?aweme_id=xxx），
+            // 这是最后一条可靠线索：从计算样式里提取背景图并匹配视频 ID。
+            if (!values.length) {
+              const bgNodes = [...node.querySelectorAll('[class*="awemeContainer" i], [class*="cover" i], [style*="background"]')]
+              for (const el of bgNodes) {
+                const bg = String(getComputedStyle(el).backgroundImage || el.getAttribute('style') || '')
+                const urlMatch = bg.match(/url\\(["']?([^"')]+)["']?\\)/i)
+                if (urlMatch) collect(urlMatch[1])
+                collect(bg)
+              }
+            }
             for (const raw of values) {
               try { return new URL(raw, location.href).href } catch {}
             }
             return ''
           })()
           if (!mediaNode && !shareUrl) return null
-          const shareText = String(node.innerText || '').replace(/\\r/g, '\n').trim().slice(0, 1000)
+          const shareText = String(node.innerText || '').replace(/\\r/g, '\\n').trim().slice(0, 1000)
+          // 诊断：记录卡片 DOM 特征，便于排查分享链接/标题提取失败。
+          const domHint = {
+            rowClass: String(node.className || '').slice(0, 120),
+            anchors: [...node.querySelectorAll('a[href]')].slice(0, 3).map((a) => String(a.getAttribute('href') || '').slice(0, 120)),
+            imgSrcs: [...node.querySelectorAll('img')].slice(0, 3).map((img) => String(img.getAttribute('src') || img.currentSrc || '').slice(0, 160)),
+            bgImages: [...node.querySelectorAll('[class*="awemeContainer" i], [class*="cover" i], [style*="background"]')].slice(0, 3).map((el) => String(getComputedStyle(el).backgroundImage || el.getAttribute('style') || '').slice(0, 200)),
+            videoSrcs: [...node.querySelectorAll('video')].slice(0, 2).map((v) => String(v.currentSrc || v.src || '').slice(0, 120)),
+            html: String(node.outerHTML || '').replace(/\\s+/g, ' ').slice(0, 2500),
+          }
           const videoRect = video?.getBoundingClientRect()
-          return { node, rect, role, top: rect.top, video, videoCandidate, poster, videoUrl, videoRect, shareUrl, shareText }
+          return { node, rect, role, top: rect.top, video, videoCandidate, poster, videoUrl, videoRect, shareUrl, shareText, domHint }
         }).filter((item) => item && item.role === 'contact').sort((left, right) => left.top - right.top)
       const selected = rows.at(-1)
       if (!selected) return null
@@ -1393,13 +1758,36 @@ class DouyinService {
       const rect = selected.node.getBoundingClientRect()
       const videoAfterScroll = selected.node.querySelector('video')
       const videoRectAfterScroll = videoAfterScroll?.getBoundingClientRect()
+      const openTarget = selected.node.querySelector('[class*="ShareAweme" i], [class*="activeClickArea" i], [class*="awemeContainer" i], a[href], [role="button"], [class*="video" i], [class*="card" i], [class*="play" i], video') || selected.videoCandidate || selected.node
+      const openRect = openTarget.getBoundingClientRect()
+      const playIcon = selected.node.querySelector('[class*="playIcon" i], [class*="PlayIcon" i], [class*="play" i], svg[viewBox]')
+      const playIconRect = playIcon?.getBoundingClientRect()
+      const coverEl = selected.node.querySelector('[class*="awemeContainer" i], [class*="cover" i], [class*="imgReal" i]') || selected.node.querySelector('img')
+      const coverRect = coverEl?.getBoundingClientRect()
       return {
         isVideo: Boolean(videoAfterScroll || selected.videoCandidate),
         duration: videoAfterScroll && Number.isFinite(videoAfterScroll.duration) ? videoAfterScroll.duration : 0,
         videoUrl: /^https?:\\/\\//i.test(selected.videoUrl || '') ? selected.videoUrl : '',
         shareUrl: /^https?:\\/\\//i.test(selected.shareUrl || '') ? selected.shareUrl : '',
         shareText: selected.shareText || '',
+        domHint: selected.domHint || null,
+        assetUrls: [...selected.node.querySelectorAll('img')]
+          .map((image) => image.currentSrc || image.src || '')
+          .filter((url) => /^https?:\\/\\//i.test(url))
+          .slice(0, 10),
+        playIconPoint: playIconRect?.width && playIconRect?.height ? {
+          x: Math.round(playIconRect.left + playIconRect.width / 2),
+          y: Math.round(playIconRect.top + playIconRect.height / 2),
+        } : null,
+        coverPoint: coverRect?.width && coverRect?.height ? {
+          x: Math.round(coverRect.left + coverRect.width / 2),
+          y: Math.round(coverRect.top + coverRect.height / 2),
+        } : null,
         posterUrl: /^https?:\\/\\//i.test(selected.poster || '') ? selected.poster : '',
+        openPoint: openRect.width && openRect.height ? {
+          x: Math.round(openRect.left + openRect.width / 2),
+          y: Math.round(openRect.top + openRect.height / 2),
+        } : null,
         videoRect: videoRectAfterScroll ? {
           x: Math.max(0, Math.floor(videoRectAfterScroll.x)),
           y: Math.max(0, Math.floor(videoRectAfterScroll.y)),
@@ -1415,17 +1803,177 @@ class DouyinService {
       }
     })()`).catch(() => null)
     if (!media?.rect?.width || !media?.rect?.height) return normalizeCapturedMedia({ frames: [], mediaKind: 'media', confidence: 'none', reason: 'no_visible_media_bubble' })
+    // publicPageOnly 模式：优先从 fetch/XHR hook 捕获的消息数据里取视频 ID
+    // （零点击、零弹层）；hook 没捕获到时才点击卡片，由导航/webRequest 拦截
+    // 兜底。无论哪种方式，主窗口都保持聊天界面不导航。
+    if (recognition.publicPageOnly === true && !media.shareUrl && media.openPoint) {
+      // WebSocket 推送有延迟，轮询等待 hook 捕获到最新消息（最多 3.5 秒）。
+      const waitStarted = Date.now()
+      while (Date.now() - waitStarted < 3500) {
+        await sleep(400)
+        const pendingCount = await win.webContents.executeJavaScript(`(() => {
+          const info = window.__xushengVideoInfo || new Map()
+          let fresh = 0
+          for (const meta of info.values()) if (meta && meta.at >= Date.now() - 90 * 1000) fresh += 1
+          return fresh
+        })()`).catch(() => 0)
+        if (pendingCount > 0) break
+      }
+      // 1) 只接受能与当前卡片作者、封面或文案强匹配的 hook 数据。
+      //    绝不能拿任意历史 ID 兜底，否则会用旧视频回复当前消息。
+      const hookResult = await win.webContents.executeJavaScript(`(() => {
+        const ids = window.__xushengVideoIds || []
+        const info = window.__xushengVideoInfo || new Map()
+        const cardText = ${JSON.stringify(String(media.shareText || '').slice(0, 1000))}
+        const assetUrls = ${JSON.stringify((media.assetUrls || []).slice(0, 10))}
+        const normalize = (value) => String(value || '').replace(/^@/, '').replace(/\\s+/g, '').trim().toLowerCase()
+        const assetKey = (value) => {
+          try { return decodeURIComponent(new URL(String(value || '')).pathname).replace(/~.*$/, '') }
+          catch { return String(value || '').split('?')[0].replace(/~.*$/, '') }
+        }
+        const pick = (id) => {
+          const meta = info.get(id)
+          return { id, author: meta?.author || '', desc: meta?.desc || '' }
+        }
+        const cardKeys = new Set(assetUrls.map(assetKey).filter((key) => key.length >= 12))
+        const coverMatches = ids.filter((id) => {
+          const covers = info.get(id)?.covers || []
+          return covers.some((url) => cardKeys.has(assetKey(url)))
+        })
+        if (coverMatches.length === 1) return pick(coverMatches[0])
+
+        const lines = cardText.split(/[\\r\\n]+/).map((line) => line.trim()).filter(Boolean)
+        const sourceIndex = lines.findIndex((line) => /来自(?:视频|图文)/.test(line))
+        const sourceAuthor = sourceIndex >= 0 ? lines[sourceIndex + 1] || '' : ''
+        const authorHint = normalize(sourceAuthor || (lines.length === 1 ? lines[0] : ''))
+        if (authorHint.length >= 2) {
+          const authorMatches = ids.filter((id) => {
+            const author = normalize(info.get(id)?.author)
+            return author && (author === authorHint || author.includes(authorHint) || authorHint.includes(author))
+          })
+          if (authorMatches.length === 1) return pick(authorMatches[0])
+        }
+
+        const normalizedCard = normalize(cardText)
+        const textMatches = ids.filter((id) => {
+          const meta = info.get(id)
+          return [meta?.title, meta?.desc].some((value) => {
+            const text = normalize(value)
+            return text.length >= 8 && normalizedCard.length >= 8 && (text.includes(normalizedCard) || normalizedCard.includes(text))
+          })
+        })
+        if (textMatches.length === 1) return pick(textMatches[0])
+        return { id: '' }
+      })()`).catch(() => ({ id: '' }))
+      if (hookResult && /^\d{10,20}$/.test(String(hookResult.id || ''))) {
+        media.shareUrl = 'https://www.douyin.com/video/' + hookResult.id
+        const hookedText = [hookResult.author, hookResult.desc].filter(Boolean).join(' ').trim().slice(0, 300)
+        if (hookedText) media.shareText = hookedText
+      } else {
+        // hook 未拿到强匹配 ID 时只记录状态，不能使用任意历史 ID。
+        const hookDebug = await win.webContents.executeJavaScript(`(() => {
+          const ids = window.__xushengVideoIds || []
+          const info = window.__xushengVideoInfo || new Map()
+          return {
+            len: ids.length,
+            last: ids.at(-1) || '',
+            all: ids.slice(-8),
+            hooked: Boolean(window.__xushengFetchHook),
+          }
+        })()`).catch(() => null)
+        this.log('video_hook_debug', `当前卡片未匹配到 hook 视频 ${name}`, { name, hookDebug, shareText: String(media.shareText || '').slice(0, 60) })
+        if (!media.shareUrl) {
+        // 2) hook 未捕获，点击卡片由导航/webRequest 拦截兜底，随后关闭弹层。
+        const detailIdsBefore = new Set(this._videoDetailIds)
+        const hookIdsBefore = await win.webContents.executeJavaScript('Array.from(window.__xushengVideoIds || [])').catch(() => [])
+        const winBefore = this._capturedVideoUrl
+        this._capturedVideoUrl = null
+        const click = (point) => {
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
+          win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
+          win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
+        }
+        click(media.openPoint)
+        const started = Date.now()
+        let awemeId = ''
+        let urlAfterClick = ''
+        let detailRequests = 0
+        while (Date.now() - started < 3500) {
+          await sleep(400)
+          if (this._capturedVideoUrl) break
+          const href = await win.webContents.executeJavaScript('location.href').catch(() => '')
+          urlAfterClick = String(href || urlAfterClick)
+          if (/douyin\.com\/(?:video|note)\//i.test(urlAfterClick)) {
+            this._capturedVideoUrl = urlAfterClick
+            break
+          }
+          detailRequests = this._videoDetailIds.size
+          if (!awemeId) {
+            const lastId = [...this._videoDetailIds].filter((id) => !detailIdsBefore.has(id)).at(-1)
+            if (lastId) awemeId = lastId
+          }
+        }
+        // 无论是否捕获成功，都要关闭播放器弹层（Esc），避免遮挡聊天界面。
+        try {
+          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+          await win.webContents.executeJavaScript(`(() => {
+            const closeBtn = [...document.querySelectorAll('[class*="close" i], [class*="Close" i], [aria-label*="关闭" i], [title*="关闭" i]')]
+              .find((node) => { const r = node.getBoundingClientRect(); return r.width > 8 && r.height > 8 })
+            if (closeBtn) closeBtn.click()
+            return Boolean(closeBtn)
+          })()`).catch(() => false)
+          await sleep(300)
+        } catch {}
+        if (this._capturedVideoUrl) {
+          media.shareUrl = this._capturedVideoUrl
+        } else if (awemeId) {
+          media.shareUrl = 'https://www.douyin.com/video/' + awemeId
+        } else {
+          this._capturedVideoUrl = winBefore
+        }
+        // 点击后只接受本次新增的 hook ID；点击前已有的均属于历史候选。
+        if (!media.shareUrl) {
+          const hookLatest = await win.webContents.executeJavaScript(`(() => {
+            const ids = window.__xushengVideoIds || []
+            const before = new Set(${JSON.stringify(hookIdsBefore)})
+            return ids.filter((id) => !before.has(id)).at(-1) || ''
+          })()`).catch(() => '')
+          if (/^\d{10,20}$/.test(String(hookLatest))) {
+            media.shareUrl = 'https://www.douyin.com/video/' + hookLatest
+          }
+        }
+        if (!media.shareUrl) {
+          const hookState = await win.webContents.executeJavaScript(`(() => {
+            const ids = window.__xushengVideoIds || []
+            const info = window.__xushengVideoInfo || new Map()
+            return {
+              ids: ids.slice(-5),
+              authors: ids.slice(-5).map((id) => String(info.get(id)?.author || '')),
+              hooked: Boolean(window.__xushengFetchHook),
+            }
+          })()`).catch(() => null)
+          this.log('video_url_capture_debug', `视频链接捕获失败诊断 ${name}`, {
+            name,
+            openPoint: media.openPoint,
+            urlAfterClick: String(urlAfterClick || '').slice(0, 120),
+            detailRequests,
+            shareText: String(media.shareText || '').slice(0, 80),
+            hookState,
+          })
+        }
+        }
+      }
+    }
     const frames = []
     const capture = async (rect = media.rect) => {
       const image = await win.webContents.capturePage(rect)
       if (image.isEmpty()) return
       const size = image.getSize()
-      const imageMaxSize = Math.max(320, Math.min(1280, Math.floor(Number(recognition.imageMaxSize || 640) || 640)))
-      const jpegQuality = Math.max(45, Math.min(90, Math.floor(Number(recognition.jpegQuality || 58) || 58)))
-      const scale = Math.min(1, imageMaxSize / size.width, imageMaxSize / size.height)
+      const scale = Math.min(1, 640 / size.width, 640 / size.height)
       const resized = scale < 1 ? image.resize({ width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)), quality: 'good' }) : image
-      const frame = `data:image/jpeg;base64,${resized.toJPEG(jpegQuality).toString('base64')}`
-      if (frame.length <= 420_000 && !frames.includes(frame)) frames.push(frame)
+      const frame = `data:image/jpeg;base64,${resized.toJPEG(58).toString('base64')}`
+      if (frame.length <= 220_000 && !frames.includes(frame)) frames.push(frame)
     }
     const seek = async (ratio) => win.webContents.executeJavaScript(`new Promise((resolve) => {
       const video = document.querySelector('[data-xusheng-media-capture="latest"] video')
@@ -1454,12 +2002,9 @@ class DouyinService {
       // Public-page modes intentionally avoid screenshots, posters and video frames.
     } else if (media.isVideo) {
       await capture(media.rect)
-      const ratios = maxFrames > 1
-        ? Array.from({ length: maxFrames - 1 }, (_, index) => (index + 1) / maxFrames)
-        : []
-      for (const ratio of ratios) {
+      for (const ratio of (maxFrames > 2 ? [0.2, 0.68] : maxFrames > 1 ? [0.5] : [])) {
         if (await seek(ratio)) {
-          await capture(modelMediaRect(media.videoRect || media.rect))
+          await capture(media.videoRect || media.rect)
           decodedVideoFrames += 1
         }
       }
@@ -1469,8 +2014,8 @@ class DouyinService {
     // A poster URL is often the cleanest key frame for a Douyin share card.
     // Keep the full video URL out of model payloads because standard
     // OpenAI-compatible chat endpoints do not accept video_url parts.
-    if (shouldCaptureFrames && media.posterUrl && frames.length < maxFrames && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
-    this.log(recognition.publicPageOnly === true ? 'video_public_context_attempted' : 'media_captured', recognition.publicPageOnly === true ? `已尝试读取 ${name} 的视频公开页文案和评论` : `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), posterFound: shouldCaptureFrames && Boolean(media.posterUrl), strength: recognition.strength || 'standard', publicPageOnly: recognition.publicPageOnly === true })
+    if (shouldCaptureFrames && media.posterUrl && frames.length < 3 && !frames.includes(media.posterUrl)) frames.push(media.posterUrl)
+    this.log(recognition.publicPageOnly === true ? 'video_public_context_attempted' : 'media_captured', recognition.publicPageOnly === true ? `已尝试读取 ${name} 的视频公开页文案和评论` : `Captured media from ${name}`, { name, frames: Math.min(frames.length, maxFrames), video: media.isVideo, videoAddressFound: Boolean(media.videoUrl), videoPageUrlFound: Boolean(media.shareUrl), shareUrl: String(media.shareUrl || '').slice(0, 120), shareText: String(media.shareText || '').slice(0, 120), openPoint: media.openPoint, domHint: media.domHint, posterFound: shouldCaptureFrames && Boolean(media.posterUrl), strength: recognition.strength || 'standard', publicPageOnly: recognition.publicPageOnly === true })
     const [audioMeta, commentMeta] = await Promise.all([
       recognition.audio === false || recognition.publicPageOnly === true ? Promise.resolve({}) : this.transcribeCapturedMediaAudio(media, name, win),
       this.readVideoCommentContext(media, name, recognition, win),
@@ -1487,9 +2032,9 @@ class DouyinService {
       })
     }
     const result = normalizeCapturedMedia({
+      ...mergedCommentMeta,
+      ...audioMeta,
       frames: frames.slice(0, maxFrames),
-      maxFrames,
-      frameDetail: recognition.frameDetail || '',
       mediaKind: media.isVideo ? 'video' : 'media',
       detectedVideo: media.isVideo,
       videoReady: media.isVideo && decodedVideoFrames > 0,
@@ -1500,8 +2045,6 @@ class DouyinService {
       captureSource: 'message_bubble',
       confidence: shouldCaptureFrames ? (media.isVideo ? (decodedVideoFrames > 0 ? 'high' : frames.length ? 'low' : 'none') : (frames.length ? 'medium' : 'none')) : (mergedCommentMeta.videoComments.length || mergedCommentMeta.videoPageDescription || mergedCommentMeta.videoPageTitle ? 'medium' : 'none'),
       reason: shouldCaptureFrames ? (media.isVideo && decodedVideoFrames <= 0 ? 'video_not_decoded' : '') : 'public_page_only',
-      ...mergedCommentMeta,
-      ...audioMeta,
     })
     return result
   }
@@ -1513,14 +2056,20 @@ class DouyinService {
       document.querySelectorAll('[data-xusheng-video-capture]').forEach((node) => node.removeAttribute('data-xusheng-video-capture'))
       const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       const editorRect = editor?.getBoundingClientRect()
-      const candidates = [...document.querySelectorAll('video, img, [style*="background-image"]')].map((node) => {
+      const rowSelector = ${JSON.stringify(CHAT_MESSAGE_ROW_SELECTOR)}
+      const markedRow = document.querySelector('[data-xusheng-latest-message="contact"]')
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect()
+        return rect.width >= 72 && rect.height >= 48 && rect.bottom > 0 && rect.top < innerHeight
+      }
+      const build = (node) => {
         const rect = node.getBoundingClientRect()
         let signature = ''
         let parent = node
         for (let depth = 0; parent && depth < 7; parent = parent.parentElement, depth += 1) signature += ' ' + String(parent.className || '')
         const looksLikeMedia = node.tagName === 'VIDEO' || /video|player|play|image|photo|picture|album|gallery|sticker|emoji|gif|share|card|content/i.test(signature) || /background-image/i.test(node.getAttribute('style') || '')
         const looksLikeAvatar = /avatar|userhead|headimage|profilephoto/i.test(signature)
-        if (!looksLikeMedia || looksLikeAvatar || rect.width < 72 || rect.height < 48 || rect.bottom <= 0 || rect.top >= innerHeight) return null
+        if (!looksLikeMedia || looksLikeAvatar || !visible(node)) return null
         const selfByClass = /MessageItemTextisFromMe|(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(signature)
         const contactByClass = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(signature)
         const center = rect.left + rect.width / 2
@@ -1528,9 +2077,28 @@ class DouyinService {
         const fromMe = selfByClass || (!contactByClass && center > divider)
         if (fromMe) return null
         return { node, rect, isVideo: node.tagName === 'VIDEO', top: rect.top }
-      }).filter(Boolean).sort((left, right) => left.top - right.top)
+      }
+      let candidates = []
+      // 优先在身份捕获标记的最新消息行内寻找媒体，避免新消息尚未渲染
+      // 完成时误选旧消息或界面其它元素。
+      if (markedRow) {
+        for (const node of markedRow.querySelectorAll('video, img, [style*="background-image"]')) {
+          const item = build(node)
+          if (item) candidates.push(item)
+        }
+      }
+      // 标记行内没有候选时，退回全页面扫描（仍限定在聊天消息行容器内）。
+      if (!candidates.length) {
+        for (const row of document.querySelectorAll(rowSelector)) {
+          for (const node of row.querySelectorAll('video, img, [style*="background-image"]')) {
+            const item = build(node)
+            if (item) candidates.push(item)
+          }
+        }
+      }
+      if (!candidates.length) return null
+      candidates.sort((left, right) => left.top - right.top)
       const selected = candidates.at(-1)
-      if (!selected) return null
       selected.node.setAttribute('data-xusheng-video-capture', 'latest')
       const rect = selected.rect
       return {
@@ -1618,9 +2186,7 @@ class DouyinService {
     const index = contacts.findIndex((contact) => contact.name === name)
     const current = index >= 0 ? contacts[index] : { id: name, name }
     const messages = mergeMessageHistory(current.learning?.messages, visibleMessages)
-    const learning = this.ai?.analyzeConversation
-      ? this.ai.analyzeConversation(messages)
-      : { messages, updatedAt: new Date().toISOString() }
+    const learning = this.analyzeConversation(messages)
     const updated = { ...current, learning }
     if (index >= 0) contacts[index] = updated
     else contacts.push(updated)
@@ -1663,6 +2229,13 @@ class DouyinService {
     })()`).catch(() => [])
   }
 
+  // 用 AI 归纳对话风格;未配置 AI 时退化为仅保存原始消息(行为与旧内联逻辑一致)
+  analyzeConversation(messages) {
+    return this.ai?.analyzeConversation
+      ? this.ai.analyzeConversation(messages)
+      : { messages, updatedAt: new Date().toISOString() }
+  }
+
   recordConversationMessage(name, role, text, fallbackContact = {}) {
     const value = String(text || '').replace(/\s+/g, ' ').trim()
     if (!name || !value || !this.storage?.update) return fallbackContact
@@ -1671,9 +2244,7 @@ class DouyinService {
     const index = contacts.findIndex((contact) => contact.name === name)
     const current = index >= 0 ? contacts[index] : { ...fallbackContact, id: fallbackContact.id || name, name }
     const messages = mergeMessageHistory(current.learning?.messages, [{ role, text: value }])
-    const learning = this.ai?.analyzeConversation
-      ? this.ai.analyzeConversation(messages)
-      : { messages, updatedAt: new Date().toISOString() }
+    const learning = this.analyzeConversation(messages)
     const updated = { ...current, learning }
     if (index >= 0) contacts[index] = updated
     else contacts.push(updated)
@@ -1747,23 +2318,38 @@ class DouyinService {
       text: (() => { const editor = document.querySelector('${EDITOR_SELECTOR}'); return editor ? ('value' in editor ? editor.value : editor.innerText) : '' })(),
     }))()`).catch((error) => { throw new Error(`发送前读取输入框失败：${error.message}`) })
     if (!normalizeEditorText(before.text)) throw new Error('Cannot send an empty message')
-    const point = await win.webContents.executeJavaScript(FIND_SEND_TARGET_JS).catch((error) => { throw new Error(`点击发送按钮失败：${error.message}`) })
-    if (!point) throw new Error('Could not find the send button')
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
-    win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
-    win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
+    const target = await win.webContents.executeJavaScript(FIND_SEND_TARGET_JS).catch((error) => { throw new Error(`点击发送按钮失败：${error.message}`) })
+    if (!target) throw new Error('Could not find the send button')
+    const point = { x: target.x, y: target.y }
+    const press = () => {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
+      win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
+      win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
+    }
+    const pressEnter = () => {
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+    }
+    press()
     // Douyin usually clears the editor quickly after a successful send. Poll so
     // fast sends return immediately while still allowing slow acknowledgements.
     const started = Date.now()
     let after = { text: before.text }
+    let enterPressed = false
     while (Date.now() - started < 5000) {
       await sleep(250)
       after = await win.webContents.executeJavaScript(`(() => ({
         text: (() => { const editor = document.querySelector('${EDITOR_SELECTOR}'); return editor ? ('value' in editor ? editor.value : editor.innerText) : '' })(),
       }))()`).catch((error) => { throw new Error(`发送后读取输入框失败：${error.message}`) })
       if (!normalizeEditorText(after.text)) return
+      // 点击后 1.5s 仍未确认：按钮定位可能是 fallback 坐标（点到了空白处），
+      // 改用 Enter 键发送（抖音私信输入框 Enter = 发送，Shift+Enter = 换行）。
+      if (!enterPressed && Date.now() - started >= 1500) {
+        enterPressed = true
+        pressEnter()
+      }
     }
-    throw new Error(`Douyin did not confirm the message was sent; send point=(${point.x}, ${point.y})`)
+    throw new Error(`Douyin did not confirm the message was sent; send point=(${point.x}, ${point.y})${target.fallback ? ' (fallback coordinate)' : ''}`)
   }
 
   async sendEmoji(name, emojiName = '\u65e9\u4e0a\u597d') {
@@ -1804,8 +2390,10 @@ class DouyinService {
       await sleep(250)
     }
     if (!sent) throw new Error(`Douyin did not confirm emoji "${emojiName}" was sent`)
-    this.rememberSelfPreview(name, `[${emojiName}]`)
+    this.lastSent.set(name, `[${emojiName}]`)
     this.lastReplyTime.set(name, Date.now())
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
+    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'emoji')
     this.log('message_sent', `Sent emoji "${emojiName}" to ${name}`, { name, emoji: emojiName })
     return { ok: true, kind: 'emoji', emojiName }
@@ -2099,9 +2687,11 @@ class DouyinService {
     if (!confirmed) throw new Error(`Douyin did not confirm the video card was sent; send point=(${sendPoint.x}, ${sendPoint.y})`)
 
     const sentText = `[视频分享] ${video.title || video.note || video.url || ''}`.replace(/\s+/g, ' ').trim()
-    this.rememberSelfPreview(target, sentText)
+    this.lastSent.set(target, sentText)
     this.lastSeen.set(target, sentText)
     this.lastReplyTime.set(target, Date.now())
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
+    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(target, 'videoShare')
     this.recordConversationMessage(target, 'me', sentText)
     this.log('message_sent', `Shared a video card with ${target}`, { name: target, url, source: metadata.source || 'video_share', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
@@ -2306,6 +2896,18 @@ class DouyinService {
     let value = String(text).trim()
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
+    // 若之前点击分享卡片打开过播放器弹层，先关闭，避免遮挡输入框/发送按钮。
+    try {
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+      await win.webContents.executeJavaScript(`(() => {
+        const closeBtn = [...document.querySelectorAll('[class*="close" i], [class*="Close" i], [aria-label*="关闭" i], [title*="关闭" i]')]
+          .find((node) => { const r = node.getBoundingClientRect(); return r.width > 8 && r.height > 8 })
+        if (closeBtn) closeBtn.click()
+        return Boolean(closeBtn)
+      })()`).catch(() => false)
+      await sleep(200)
+    } catch {}
     const editorState = await win.webContents.executeJavaScript(`(() => {
       const value = ${JSON.stringify(String(text).trim())}
       const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
@@ -2388,9 +2990,11 @@ class DouyinService {
       throw error
     }
     const normalized = value.replace(/\s+/g, ' ').trim()
-    this.rememberSelfPreview(name, normalized)
+    this.lastSent.set(name, normalized)
     this.lastSeen.set(name, normalized)
     this.lastReplyTime.set(name, Date.now())
+    const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
+    this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'text')
     this.recordConversationMessage(name, 'me', normalized)
     this.log('message_sent', `Sent a message to ${name}`, { name, text: normalized, source: metadata.source || 'manual', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
@@ -2461,7 +3065,6 @@ class DouyinService {
     const state = this.storage.get()
     const config = state.automation || {}
     const settings = state.settings || {}
-    const draftOnly = settings.aiReplyDraftOnly === true
     if (settings.quietHours) {
       const toMinutes = (value) => {
         const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
@@ -2529,11 +3132,13 @@ class DouyinService {
             if (incomingIdentity?.fingerprint) currentMessageKey = mediaMessageKey(contact, incomingIdentity.fingerprint)
           } catch (_) {}
         } else if (previewMediaKind && isMediaMessageKey(previous, contact.preview)) {
+          // An old, already-read media preview does not need to reopen its chat
+          // on every poll. Unread or recently received cards are inspected above.
           currentMessageKey = previous
         }
         // Establish a baseline on the first sync so old conversations are not
         // answered unexpectedly after a fresh install or logout.
-        if (!hasPrevious && !reenabled) {
+        if (!hasPrevious && !reenabled && !(previewMediaKind && (Boolean(contact.unread) || recentlyReceived))) {
           this.lastSeen.set(contact.name, currentMessageKey)
           continue
         }
@@ -2543,7 +3148,7 @@ class DouyinService {
           continue
         }
         if (previous === currentMessageKey && !reenabled) continue
-        if (!pendingInquiry && !draftOnly && !canSend(contact.name)) {
+        if (!pendingInquiry && !canSend(contact.name)) {
           const noticeKey = `${contact.name}:${localDateKey()}`
           if (!this.lastLimitNotice.has(noticeKey)) {
             this.lastLimitNotice.set(noticeKey, Date.now())
@@ -2551,16 +3156,6 @@ class DouyinService {
           }
           // Keep lastSeen unchanged so the message is retried after the limit
           // resets instead of being silently discarded.
-          continue
-        }
-        const bracketedPreview = /^\[[^\]\r\n]{1,40}\]$/.test(String(contact.preview || '').trim())
-        const lastSelfAt = Number(this.lastSentAt.get(contact.name) || 0)
-        const recentSelfPreview = bracketedPreview
-          && this.lastSent.get(contact.name) === String(contact.preview || '').replace(/\s+/g, ' ').trim()
-          && Date.now() - lastSelfAt < 90_000
-        if (recentSelfPreview) {
-          this.log('auto_skip', `${contact.name} 是刚刚自己发的表情，跳过`, { name: contact.name, preview: contact.preview })
-          this.lastSeen.set(contact.name, currentMessageKey)
           continue
         }
         // A positive list marker is useful, but its absence is not proof that
@@ -2571,9 +3166,7 @@ class DouyinService {
             ? true
             : incomingIdentity?.role === 'contact'
               ? false
-              : bracketedPreview
-                ? false
-                : await this.isLastMessageFromMe(contact.name)
+              : await this.isLastMessageFromMe(contact.name)
         if (fromMe === true) {
           this.log('auto_skip', `${contact.name} 是自己发的，跳过`)
           this.lastSeen.set(contact.name, currentMessageKey)
@@ -2624,26 +3217,37 @@ class DouyinService {
             let mediaCapture = normalizeCapturedMedia([])
             const mediaKind = mediaPreviewKind(contact.preview)
             const isMedia = Boolean(mediaKind)
+            let useMediaForReply = isMedia
             if (isMedia) {
               if (settings.videoReplyEnabled === false || settings.videoRecognitionEnabled === false) {
-                this.log('media_skipped', `${contact.name} media skipped because video replies are disabled`, { name: contact.name, mediaKind, reason: 'video_reply_disabled' })
-                this.lastSeen.set(contact.name, currentMessageKey)
-                continue
-              }
-              try {
-                const recognition = videoRecognitionOptions(settings)
-                mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, recognition), mediaKind)
-                // Keep the original node-level capture as a fallback for older
-                // page layouts where the message wrapper is not discoverable.
-                if (shouldUseVideoFrameFallback(recognition, mediaCapture) && this.captureLatestIncomingVideo) {
-                  mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingVideo(contact.name), mediaKind)
+                if (hasReplyablePreviewText(contact.preview)) {
+                  useMediaForReply = false
+                  this.log('media_text_fallback', `${contact.name} media replies are disabled; using preview text`, { name: contact.name, mediaKind, preview: contact.preview, reason: 'replyable_preview' })
+                } else {
+                  this.log('media_skipped', `${contact.name} media skipped because video replies are disabled`, { name: contact.name, mediaKind, reason: 'video_reply_disabled' })
+                  this.lastSeen.set(contact.name, currentMessageKey)
+                  continue
                 }
-              } catch (_) {}
+              } else {
+                try {
+                  const recognition = videoRecognitionOptions(settings)
+                  mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, recognition), mediaKind)
+                  // Keep the original node-level capture as a fallback for older
+                  // page layouts where the message wrapper is not discoverable.
+                  if (shouldUseVideoFrameFallback(recognition, mediaCapture) && this.captureLatestIncomingVideo) {
+                    mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingVideo(contact.name), mediaKind)
+                  }
+                } catch (_) {}
+              }
             }
-            if (isMedia) {
-              const providers = this.storage.get().providers || []
-              const hasAudioTranscript = Boolean(mediaCapture.audioTranscript)
-              const hasPublicContext = hasPublicMediaContext(mediaCapture)
+            const providers = this.storage.get().providers || []
+            const hasAudioTranscript = Boolean(mediaCapture.audioTranscript)
+            const hasPublicContext = hasPublicMediaContext(mediaCapture)
+            if (useMediaForReply && !mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext && hasReplyablePreviewText(contact.preview)) {
+              useMediaForReply = false
+              this.log('media_text_fallback', `${contact.name} media capture unavailable; using preview text`, { name: contact.name, mediaKind, preview: contact.preview, mediaCapture, reason: mediaCapture.reason || 'media_capture_unavailable' })
+            }
+            if (useMediaForReply) {
               const caps = providers.length ? providers.some(p => (p.capabilities || []).includes('vision')) : Boolean(this.ai?.hasProvider?.())
               if (!caps && !hasAudioTranscript && !hasPublicContext) {
                 this.log('media_skipped', `${contact.name} media skipped because the model lacks vision`, { name: contact.name, mediaKind })
@@ -2666,7 +3270,7 @@ class DouyinService {
                 this.log('video_low_confidence', `${contact.name} video frames are limited; using a conservative AI reply`, { name: contact.name, mediaKind, mediaCapture })
               }
             }
-            aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: conversationTimeMeta(contact), videoFrames: isMedia ? mediaCapture : undefined })
+            aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: conversationTimeMeta(contact), videoFrames: useMediaForReply ? mediaCapture : undefined })
             if (aiDraft?.ok && (aiDraft.labeledText || aiDraft.text)) {
               const model = aiDraft.model || this.storage.get().providers?.[0]?.model || '当前模型'
               const label = aiDraft.aiLabel || `AI · ${model}`
@@ -2682,18 +3286,12 @@ class DouyinService {
           }
         }
         if (replyText) {
-          if (draftOnly && aiAttempted) {
-            this.lastSeen.set(contact.name, currentMessageKey)
-            this.log('reply_drafted', `AI draft prepared for ${contact.name}`, {
-              name: contact.name,
-              text: replyText,
-              incoming: contact.preview,
-              model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型',
-              provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '',
-            })
-            continue
-          }
           try {
+            const mediaKindForReply = mediaPreviewKind(contact.preview)
+            if (mediaKindForReply && isUnavailableMediaReply(replyText)) {
+              this.log('ai_reply_rejected', `${contact.name} 的媒体回复已拦截`, { name: contact.name, mediaKind: mediaKindForReply, preview: contact.preview, text: replyText, reason: 'unavailable_media_reply' })
+              continue
+            }
             const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '', provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '', aiLabel: aiDraft?.aiLabel || `AI · ${aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型'}` } : { source: 'rule' }
             await this.sendMessage(contact.name, replyText, aiMeta)
             this.lastSeen.set(contact.name, currentMessageKey)
@@ -2783,4 +3381,4 @@ class DouyinService {
   }
 }
 
-module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, hasPublicMediaContext, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionStrength, normalizeVideoShareCategories, normalizeVideoShareItems, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms }
+module.exports = { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, fallbackVideoShareCaption, hasPublicMediaContext, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionStrength, normalizeVideoShareCategories, normalizeVideoShareItems, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms }

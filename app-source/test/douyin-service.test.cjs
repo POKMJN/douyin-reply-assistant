@@ -1,1103 +1,165 @@
-const test = require('node:test')
 const assert = require('node:assert/strict')
 const Module = require('node:module')
+const test = require('node:test')
+const vm = require('node:vm')
 
 const originalLoad = Module._load
-Module._load = function (request, parent, isMain) {
+Module._load = function load(request, parent, isMain) {
   if (request === 'electron') return { BrowserWindow: class {}, session: {} }
   return originalLoad.call(this, request, parent, isMain)
 }
-const { AUTOMATION_POLL_MS, DouyinService, VIDEO_SHARE_CATEGORIES, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractStreakCount, fallbackVideoShareCaption, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, modelMediaRect, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoShareCategories, normalizeVideoShareItems, resolveConversationSentAt, scheduleNextVideoShareAt, shouldUseVideoFrameFallback, videoRecognitionOptions, videoShareDailyLimit, videoShareDiscoveryTerms } = require('../electron/douyin-service.cjs')
-Module._load = originalLoad
 
-const localDateKey = (value = new Date()) => {
-  const date = value instanceof Date ? value : new Date(value)
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
+const {
+  DouyinService,
+  extractPublicCommentItemText,
+  extractReactAwemeId,
+  hasPublicMediaContext,
+  isUnavailableMediaReply,
+  mediaPreviewKind,
+  mergePublicMediaContext,
+  normalizeCommentContext,
+  normalizeCapturedMedia,
+  normalizeVisibleMediaContext,
+  pickLatestChatMessageRole,
+  shouldUseVideoFrameFallback,
+  videoRecognitionOptions,
+} = require('../electron/douyin-service.cjs')
+const {
+  buildChatMessages,
+  normalizeVideoInput,
+  replyQualityIssues,
+} = require('../electron/ai-service.cjs')
 
-test('contact preview excludes streak counts and other row metadata', () => {
-  const lines = ['小明', '726', '10分钟前', '今晚一起吃饭吗']
-
-  assert.equal(extractStreakCount('726', lines), 726)
-  assert.equal(extractConversationPreview(lines, '今晚一起吃饭吗', '726'), '今晚一起吃饭吗')
-  assert.equal(extractConversationPreview(lines, '', '726'), '今晚一起吃饭吗')
+test.after(() => {
+  Module._load = originalLoad
 })
 
-test('an actual numeric message is preserved when read from the preview node', () => {
-  const lines = ['小明', '726', '刚刚', '311']
-
-  assert.equal(extractConversationPreview(lines, '311', '726'), '311')
-})
-
-test('conversation list time labels are extracted and resolved', () => {
-  const now = new Date('2026-07-22T08:00:00+08:00')
-  const lines = ['小明', '726', '01:00', '昨晚睡不着']
-  const label = extractConversationTimeLabel(lines)
-  const sentAt = resolveConversationSentAt(label, now)
-
-  assert.equal(label, '01:00')
-  assert.equal(new Date(sentAt).getHours(), 1)
-  assert.equal(conversationTimeMeta({ sentAtLabel: label }, now).sentAt, sentAt)
-})
-
-test('video previews are recognized without treating normal text as video', () => {
-  assert.equal(isVideoPreview('[视频]'), true)
-  assert.equal(isVideoPreview('对方发来一个视频'), true)
-  assert.equal(isVideoPreview('晚上一起吃饭吗'), false)
-})
-
-test('Douyin media previews are classified for vision handling', () => {
-  assert.equal(mediaPreviewKind('[视频]'), 'video')
-  assert.equal(mediaPreviewKind('▶Ι〣〣〣36"'), 'video')
-  assert.equal(mediaPreviewKind('分享 @搞个礼物 的评论'), 'share')
-  assert.equal(mediaPreviewKind('分享[评论]'), 'share')
-  assert.equal(mediaPreviewKind('分享[图集]'), 'album')
-  assert.equal(mediaPreviewKind('[图片]'), 'image')
-  assert.equal(mediaPreviewKind('[表情]'), 'sticker')
-  assert.equal(mediaPreviewKind('晚上一起吃饭吗'), '')
-})
-
-test('model media capture rect trims bottom author overlays without shifting content', () => {
-  assert.deepEqual(modelMediaRect({ x: 100.8, y: 50.2, width: 160.2, height: 214.8 }), {
-    x: 100,
-    y: 50,
-    width: 161,
-    height: 181,
-  })
-  assert.deepEqual(modelMediaRect({ x: 0, y: 0, width: 120, height: 80 }, { stripBottom: false }), {
-    x: 0,
-    y: 0,
-    width: 120,
-    height: 80,
-  })
-})
-
-test('AI automation passes captured video frames to the draft request', async () => {
-  const state = { settings: { videoRecognitionStrength: 'deep' }, automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const drafted = []
-  let captureOptions
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '这个也太逗了' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async (_name, options) => {
-    captureOptions = options
-    return ({
-    frames: ['data:image/jpeg;base64,frame'],
-    mediaKind: 'video',
-    detectedVideo: true,
-    videoReady: true,
-    decodedVideoFrames: 1,
-    audioTranscript: '这里有人说早上好',
-    audioTranscriptionSource: 'direct_url',
-    audioTranscriptionModel: 'whisper-test',
-    videoPageTitle: '早市小吃',
-    videoComments: ['看起来好香'],
-    confidence: 'high',
-  })
-  }
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.deepEqual(drafted[0].videoFrames.frames, ['data:image/jpeg;base64,frame'])
-  assert.equal(drafted[0].videoFrames.confidence, 'high')
-  assert.equal(drafted[0].videoFrames.audioTranscript, '这里有人说早上好')
-  assert.equal(drafted[0].videoFrames.audioTranscriptionModel, 'whisper-test')
-  assert.deepEqual(captureOptions, { strength: 'deep', maxFrames: 9, audio: true, commentLimit: 12, commentWaitMs: 6500, frameDetail: 'high', imageMaxSize: 960, jpegQuality: 72 })
-  assert.deepEqual(drafted[0].videoFrames.videoComments, ['看起来好香'])
-})
-
-test('public-page comment modes keep video replies text-only', async () => {
-  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }), {
-    strength: 'comments20',
-    maxFrames: 0,
-    audio: false,
-    commentLimit: 20,
-    commentWaitMs: 6500,
-    commentScrolls: 4,
-    publicPageOnly: true,
-  })
-  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), {
-    strength: 'comments30',
-    maxFrames: 0,
-    audio: false,
-    commentLimit: 30,
-    commentWaitMs: 8500,
-    commentScrolls: 6,
-    publicPageOnly: true,
-  })
-  const comments = Array.from({ length: 35 }, (_, index) => `评论${index + 1}`)
-  const context = normalizeCommentContext({ description: '这是一条公开页文案', comments }, 30)
-  assert.equal(context.videoComments.length, 30)
-  assert.equal(context.videoPageDescription, '这是一条公开页文案')
-  assert.equal(shouldUseVideoFrameFallback(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), { frames: [] }), false)
-})
-
-test('visible shared-comment cards preserve comment text without treating authors as titles', () => {
-  const cardText = [
-    '分享 @zmjjkk 的评论',
-    '起码累着自己了😍',
-    '来自视频',
-    '“我去，不早说” #冷知识 #生活小妙招',
-  ].join('\n')
-  const visible = normalizeVisibleMediaContext(cardText, 20)
-
-  assert.equal(visible.videoPageTitle, '')
-  assert.equal(visible.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
-  assert.equal(visible.videoSharedComment, '起码累着自己了😍')
-  assert.deepEqual(visible.videoComments, ['起码累着自己了😍'])
-  assert.equal(visible.videoCommentSource, 'visible_card')
-  const compactVisible = normalizeVisibleMediaContext(cardText.replace(/\n/g, ' '), 20)
-  assert.equal(compactVisible.videoPageTitle, '')
-  assert.equal(compactVisible.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
-  assert.equal(compactVisible.videoSharedComment, '起码累着自己了😍')
-  assert.deepEqual(compactVisible.videoComments, ['起码累着自己了😍'])
-  assert.deepEqual(normalizeVisibleMediaContext('xiang先生', 20).videoComments, [])
-  assert.equal(normalizeVisibleMediaContext('xiang先生', 20).videoPageTitle, '')
-
-  const merged = mergePublicMediaContext({
-    videoPageTitle: '',
-    videoPageAuthor: '',
-    videoPageDescription: '',
-    videoComments: [],
-    videoCommentError: 'public page unavailable',
-  }, cardText, 20)
-  assert.equal(merged.videoPageTitle, '')
-  assert.equal(merged.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
-  assert.equal(merged.videoSharedComment, '起码累着自己了😍')
-  assert.deepEqual(merged.videoComments, ['起码累着自己了😍'])
-  assert.equal(mergePublicMediaContext({ videoPageTitle: 'xiang先生的作品 - 抖音' }, 'xiang先生', 20).videoPageTitle, '')
-})
-
-test('public-page context can reply without frames or fallback capture', async () => {
-  const comments = Array.from({ length: 30 }, (_, index) => `热评${index + 1}`)
-  const state = {
-    settings: { videoRecognitionStrength: 'comments30' },
-    providers: [{ name: 'Text', model: 'text-model', capabilities: [] }],
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-  }
-  const drafted = []
-  const sent = []
-  let captureOptions
-  let fallbackCalled = false
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '这条评论区挺有意思' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.selectConversation = async () => null
-  service.captureLatestIncomingMedia = async (_name, options) => {
-    captureOptions = options
-    return normalizeCapturedMedia({
-      frames: [],
-      maxFrames: options.maxFrames,
-      mediaKind: 'video',
-      detectedVideo: true,
-      videoReady: false,
-      videoPageTitle: '早市小吃',
-      videoPageDescription: '老板出摊做早餐',
-      videoComments: comments,
-      confidence: 'medium',
-      reason: 'public_page_only',
-    })
-  }
-  service.captureLatestIncomingVideo = async () => {
-    fallbackCalled = true
-    return { frames: ['data:image/jpeg;base64,frame'] }
-  }
-  service.sendMessage = async (name, text) => { sent.push({ name, text }) }
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.deepEqual(captureOptions, {
-    strength: 'comments30',
-    maxFrames: 0,
-    audio: false,
-    commentLimit: 30,
-    commentWaitMs: 8500,
-    commentScrolls: 6,
-    publicPageOnly: true,
-  })
-  assert.equal(fallbackCalled, false)
-  assert.equal(drafted.length, 1)
-  assert.deepEqual(drafted[0].videoFrames.frames, [])
-  assert.equal(drafted[0].videoFrames.videoComments.length, 30)
-  assert.deepEqual(sent, [{ name: '小明', text: '【AI · text-model】这条评论区挺有意思' }])
-})
-
-test('AI automation can reply to video audio when no frame was captured', async () => {
-  const state = { providers: [{ name: 'Text', model: 'text-model', capabilities: [] }], automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const drafted = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '早呀' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async () => ({
-    frames: [],
-    mediaKind: 'video',
-    detectedVideo: true,
-    videoReady: false,
-    audioTranscript: '这里有人说早上好',
-    audioTranscriptionSource: 'direct_url',
-    confidence: 'low',
-  })
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(drafted.length, 1)
-  assert.deepEqual(drafted[0].videoFrames.frames, [])
-  assert.equal(drafted[0].videoFrames.audioTranscript, '这里有人说早上好')
-})
-
-test('media auto replies can be disabled from settings', async () => {
-  const logs = []
-  const state = { settings: { videoReplyEnabled: false }, automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: (entry) => logs.push(entry) },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => assert.fail('disabled media replies must not call AI') },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async () => assert.fail('disabled media replies must not capture frames')
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(logs.at(-1).type, 'media_skipped')
-  assert.equal(logs.at(-1).detail.reason, 'video_reply_disabled')
-  assert.equal(service.lastSeen.get('小明'), '[视频]')
-})
-
-test('low confidence videos still generate conservative AI replies when a frame exists', async () => {
-  const logs = []
-  const state = { automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const drafted = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: (entry) => logs.push(entry) },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '有点看不清是哪段诶' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async () => ({
-    frames: ['data:image/jpeg;base64,poster'],
-    mediaKind: 'video',
-    detectedVideo: true,
-    videoReady: false,
-    videoAddressFound: false,
-    posterFound: true,
-  })
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.ok(logs.some((entry) => entry.type === 'video_low_confidence'))
-  assert.equal(drafted[0].videoFrames.confidence, 'low')
-  assert.equal(drafted[0].videoFrames.reason, 'video_not_decoded')
-})
-
-test('low confidence video replies can be disabled from settings', async () => {
-  const logs = []
-  const state = { settings: { videoLowConfidenceReply: false }, automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: (entry) => logs.push(entry) },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => assert.fail('low confidence disabled must not call AI') },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async () => ({
-    frames: ['data:image/jpeg;base64,poster'],
-    mediaKind: 'video',
-    detectedVideo: true,
-    videoReady: false,
-  })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(logs.at(-1).type, 'video_unreadable')
-  assert.equal(logs.at(-1).detail.reason, 'low_confidence_disabled')
-  assert.equal(service.lastSeen.get('小明'), '[视频]')
-})
-
-test('unreadable videos with no frames are skipped instead of generating an AI reply', async () => {
-  const logs = []
-  const state = { automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: (entry) => logs.push(entry) },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => assert.fail('videos with no frames must not call AI') },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[视频]' }] })
-  service.captureLatestIncomingMedia = async () => ({
-    frames: [],
-    mediaKind: 'video',
-    detectedVideo: true,
-    videoReady: false,
-  })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(logs.at(-1).type, 'video_unreadable')
-  assert.equal(service.lastSeen.get('小明'), '[视频]')
-})
-
-test('image media still uses vision frames without requiring video decoding', async () => {
-  const state = { automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 }, sendHistory: [] }
-  const drafted = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '这张图挺有意思' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '[图片]' }] })
-  service.captureLatestIncomingMedia = async () => ({
-    frames: ['data:image/jpeg;base64,image-frame'],
-    mediaKind: 'image',
-    detectedVideo: false,
-    videoReady: false,
-  })
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.deepEqual(drafted[0].videoFrames.frames, ['data:image/jpeg;base64,image-frame'])
-  assert.equal(drafted[0].videoFrames.mediaKind, 'image')
-})
-
-test('shared comment cards capture media instead of falling back to text-only replies', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    providers: [{ name: 'Vision', model: 'vision-model', capabilities: ['vision'] }],
-    sendHistory: [],
-  }
-  const drafted = []
-  let captured = false
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: {
-      hasProvider: () => true,
-      draft: async (payload) => { drafted.push(payload); return { ok: true, text: '这评论也太好笑了' } },
+test('ignores emoji-like toolbar nodes outside chat message rows', () => {
+  const role = pickLatestChatMessageRole([
+    {
+      withinMessageRow: false,
+      rect: { top: 760, left: 980, width: 32, height: 32 },
+      me: true,
     },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '分享[评论]' }] })
-  service.captureLatestIncomingMedia = async () => {
-    captured = true
-    return { frames: ['data:image/jpeg;base64,comment-card'], mediaKind: 'share', detectedVideo: false, videoReady: false }
-  }
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(captured, true)
-  assert.equal(drafted[0].incoming, '分享[评论]')
-  assert.deepEqual(drafted[0].videoFrames.frames, ['data:image/jpeg;base64,comment-card'])
-  assert.equal(drafted[0].videoFrames.mediaKind, 'share')
-})
-
-test('composite media capture script compiles independently of page content', async () => {
-  const service = new DouyinService({ storage: { get: () => ({}) }, emit: () => {} })
-  service.selectConversation = async () => ({ webContents: { executeJavaScript: async (script) => { new Function(script); return null } } })
-  service.waitForEditor = async () => ({})
-  assert.deepEqual(await service.captureLatestIncomingMedia('小明'), normalizeCapturedMedia({ frames: [], mediaKind: 'media', confidence: 'none', reason: 'no_visible_media_bubble' }))
-})
-
-test('visible chat history merges without duplicating the overlap', () => {
-  const previous = [
-    { role: 'contact', text: '第一条' },
-    { role: 'me', text: '第二条' },
-    { role: 'contact', text: '第三条' },
-  ]
-  const visible = [
-    { role: 'me', text: '第二条' },
-    { role: 'contact', text: '第三条' },
-    { role: 'me', text: '第四条' },
-  ]
-
-  assert.deepEqual(mergeMessageHistory(previous, visible), [
-    ...previous,
-    { role: 'me', text: '第四条' },
-  ])
-})
-
-test('learning script compiles and persists the learned contact', async () => {
-  const state = { contacts: [{ id: '小明', name: '小明' }], logs: [] }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.push(entry),
-  }
-  const win = {
-    webContents: {
-      executeJavaScript: async (script) => {
-        new Function(script)
-        return [{ role: 'contact', text: '在吗' }, { role: 'me', text: '在啊' }]
-      },
+    {
+      withinMessageRow: true,
+      rect: { top: 520, left: 128, width: 180, height: 56 },
+      them: true,
     },
-  }
-  const service = new DouyinService({
-    storage,
-    emit: () => {},
-    ai: { analyzeConversation: (messages) => ({ messages, contactStyle: { summary: '偏短句' } }) },
-  })
-  service.selectConversation = async () => win
-  service.waitForEditor = async () => ({})
-
-  const result = await service.learnConversation('小明')
-
-  assert.equal(result.learnedMessages, 2)
-  assert.equal(state.contacts[0].learning.contactStyle.summary, '偏短句')
-  assert.equal(state.logs[0].type, 'language_learned')
-})
-
-test('new incoming and sent messages continuously update local learning', () => {
-  const state = { contacts: [{ id: '小明', name: '小明', learning: { messages: [{ role: 'contact', text: '旧消息' }] } }] }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-  }
-  const service = new DouyinService({
-    storage,
-    emit: () => {},
-    ai: { analyzeConversation: (messages) => ({ messages, updatedAt: '2026-07-19T00:00:00.000Z' }) },
+  ], {
+    innerWidth: 1200,
+    editorRect: { left: 0, width: 1200 },
   })
 
-  service.recordConversationMessage('小明', 'contact', '新消息')
-  service.recordConversationMessage('小明', 'me', '我的回复')
-
-  assert.deepEqual(state.contacts[0].learning.messages, [
-    { role: 'contact', text: '旧消息' },
-    { role: 'contact', text: '新消息' },
-    { role: 'me', text: '我的回复' },
-  ])
+  assert.equal(role, 'contact')
 })
 
-test('sendMessage falls back to native text insertion', async () => {
-  const calls = []
-  const results = [{ ok: false }, true, true]
-  const win = {
-    webContents: {
-      executeJavaScript: async () => results.shift(),
-      insertText: async (text) => { calls.push(text) },
+test('does not classify a stray emoji node as my last message by itself', () => {
+  const role = pickLatestChatMessageRole([
+    {
+      withinMessageRow: false,
+      rect: { top: 760, left: 980, width: 32, height: 32 },
+      me: true,
     },
-  }
-  const logs = []
-  const service = new DouyinService({
-    storage: {
-      state: { automation: { dailyLimit: 30, cooldown: 0 }, sendHistory: [] },
-      get() { return structuredClone(this.state) },
-      update(patch) { this.state = { ...this.state, ...patch } },
-      addLog: (entry) => logs.push(entry),
+  ], {
+    innerWidth: 1200,
+    editorRect: { left: 0, width: 1200 },
+  })
+
+  assert.equal(role, null)
+})
+
+test('falls back to bubble position for valid message rows without role classes', () => {
+  assert.equal(pickLatestChatMessageRole([
+    {
+      withinMessageRow: true,
+      rect: { top: 200, left: 820, width: 160, height: 48 },
     },
-    emit: () => {},
-  })
-  service.selectConversation = async () => win
-  service.waitForEditor = async () => ({})
-  service.sendCurrentInput = async () => {}
+  ], {
+    innerWidth: 1200,
+    editorRect: { left: 0, width: 1200 },
+  }), 'me')
 
-  const result = await service.sendMessage('小明', 'AI 自动回复')
-
-  assert.deepEqual(result, { ok: true })
-  assert.deepEqual(calls, ['AI 自动回复'])
-  assert.equal(logs[0].type, 'message_sent')
-  assert.equal(service.lastSent.get('小明'), 'AI 自动回复')
-})
-
-test('sendMessage sends an existing allowed spark draft instead of blocking retries', async () => {
-  const win = { webContents: { executeJavaScript: async () => ({ ok: false, occupied: true, current: 'spark draft a' }) } }
-  const logs = []
-  const service = new DouyinService({
-    storage: {
-      state: { automation: { dailyLimit: 30, cooldown: 0 }, sendHistory: [] },
-      get() { return structuredClone(this.state) },
-      update(patch) { this.state = { ...this.state, ...patch } },
-      addLog: (entry) => logs.push(entry),
+  assert.equal(pickLatestChatMessageRole([
+    {
+      withinMessageRow: true,
+      rect: { top: 200, left: 120, width: 160, height: 48 },
     },
-    emit: () => {},
-  })
-  service.selectConversation = async () => win
-  service.waitForEditor = async () => ({})
-  let sent = false
-  service.sendCurrentInput = async () => { sent = true }
-
-  const result = await service.sendMessage('spark-contact', 'spark draft b', {
-    source: 'spark_combo_text',
-    allowedDrafts: ['spark draft a', 'spark draft b'],
-  })
-
-  assert.deepEqual(result, { ok: true })
-  assert.equal(sent, true)
-  assert.equal(logs[0].type, 'message_sent')
-  assert.equal(logs[0].detail.text, 'spark draft a')
+  ], {
+    innerWidth: 1200,
+    editorRect: { left: 0, width: 1200 },
+  }), 'contact')
 })
 
-test('combo spark tasks send text first and then the selected emoji', async () => {
-  const calls = []
-  const service = new DouyinService({ storage: { get: () => ({}) }, emit: () => {} })
-  service.sendMessage = async (name, text, metadata) => { calls.push(['text', name, text, metadata.source]); return { ok: true } }
-  service.sendEmoji = async (name, emojiName) => { calls.push(['emoji', name, emojiName]); return { ok: true, kind: 'emoji', emojiName } }
-
-  const result = await service.sendTask('小明', { kind: 'combo', message: '今天也来续个火花呀', emojiName: '续火花' })
-
-  assert.deepEqual(calls, [
-    ['text', '小明', '今天也来续个火花呀', 'spark_combo_text'],
-    ['emoji', '小明', '续火花'],
-  ])
-  assert.deepEqual(result, { ok: true, kind: 'combo', emojiName: '续火花', message: '今天也来续个火花呀' })
-})
-
-test('spark text tasks choose one saved message for the current day', async () => {
-  const calls = []
-  const service = new DouyinService({ storage: { get: () => ({}) }, emit: () => {} })
-  const task = { id: 22, kind: 'text', name: 'spark-contact', message: 'fallback', messages: ['A', 'B', 'C'] }
-  service.sendMessage = async (name, text) => { calls.push({ name, text }); return { ok: true } }
-
-  await service.sendTask('spark-contact', task)
-
-  assert.deepEqual(calls, [{ name: 'spark-contact', text: dailySparkMessage(task) }])
-  assert.match(calls[0].text, /^[ABC]$/)
-  assert.notEqual(dailySparkMessage(task, new Date('2026-07-23T10:00:00')), dailySparkMessage(task, new Date('2026-07-22T10:00:00')))
-})
-
-test('starting an inquiry sends a generated question and persists a waiting record', async () => {
-  const state = { contacts: [{ name: '小明' }], automation: { inquiries: [], dailyLimit: 30 }, sendHistory: [] }
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), update: (patch) => Object.assign(state, patch), addLog: () => {} },
-    emit: () => {},
-    ai: { planInquiry: async () => ({ ok: true, text: '你最近工作忙不忙呀', model: 'test-model', provider: 'Test', aiLabel: 'AI · test-model' }) },
-  })
-  const sent = []
-  service.sendMessage = async (name, text, metadata) => sent.push({ name, text, metadata })
-
-  const result = await service.startInquiry({ name: '小明', question: '他最近工作忙不忙' })
-
-  assert.equal(result.inquiry.status, 'waiting')
-  assert.equal(state.automation.inquiries[0].question, '他最近工作忙不忙')
-  assert.deepEqual(sent, [{ name: '小明', text: '你最近工作忙不忙呀', metadata: { source: 'inquiry', ai: true, model: 'test-model', provider: 'Test', aiLabel: 'AI · test-model' } }])
-})
-
-test('a pending inquiry summarizes the next reply without sending another message', async () => {
-  const state = {
-    contacts: [{ name: '小明' }],
-    automation: { autoReply: false, paused: false, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], inquiries: [{ id: 1, name: '小明', question: '他最近工作忙不忙', asked: '你最近工作忙不忙呀', status: 'waiting' }], dailyLimit: 30 },
-    sendHistory: [], logs: [],
-  }
-  const storage = { get: () => structuredClone(state), update: (patch) => Object.assign(state, patch), addLog: (entry) => state.logs.unshift(entry) }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { summarizeInquiry: async () => ({ ok: true, report: '对方说最近工作很忙。', model: 'test-model' }), analyzeConversation: (messages) => ({ messages }) } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '最近项目很多，确实挺忙的' }] })
-  service.isLastMessageFromMe = async () => false
-  service.sendMessage = async () => assert.fail('inquiry answers must not trigger an automatic outgoing reply')
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(state.automation.inquiries[0].status, 'answered')
-  assert.equal(state.automation.inquiries[0].report, '对方说最近工作很忙。')
-  assert.equal(state.logs[0].type, 'inquiry_answered')
-})
-
-test('video share task parsing and limits stay conservative', () => {
-  const task = {
-    kind: 'videoShare',
-    maxPerDay: 50,
-    message: 'https://v.douyin.com/abc/ | 冷幽默短片 | 后面那个停顿很好笑\nnot a url',
-  }
-
-  assert.equal(videoShareDailyLimit(task), 10)
-  assert.deepEqual(normalizeVideoShareItems(task), [{
-    url: 'https://v.douyin.com/abc/',
-    title: '冷幽默短片',
-    note: '后面那个停顿很好笑',
-  }])
-  assert.match(fallbackVideoShareCaption({ note: '后面那个停顿很好笑' }), /停顿/)
-})
-
-test('video share discovery terms prefer configured topics', () => {
-  assert.deepEqual(videoShareDiscoveryTerms(
-    { profile: { personality: '健身日常、电影剪辑' } },
-    { discoveryQuery: '搞笑反转\n猫狗日常' },
-  ).slice(0, 4), ['搞笑反转', '猫狗日常', '健身日常', '电影剪辑'])
-  assert.ok(videoShareDiscoveryTerms({}, {}).length > 0)
-})
-
-test('video share category tags normalize and prioritize learned replies', () => {
-  assert.deepEqual(normalizeVideoShareCategories(['搞笑反转', '未知类型', '猫狗萌宠', '搞笑反转']), ['搞笑反转', '猫狗萌宠'])
-  assert.ok(VIDEO_SHARE_CATEGORIES.includes('电影剪辑'))
-
-  const terms = videoShareDiscoveryTerms({
-    profile: {
-      videoShare: {
-        categories: ['搞笑反转', '电影剪辑'],
-        videoShareState: {
-          categoryStats: {
-            搞笑反转: { sent: 3, replied: 0 },
-            电影剪辑: { sent: 2, replied: 2 },
-          },
-        },
-      },
-    },
-  }, {})
-  assert.deepEqual(terms.slice(0, 2), ['电影剪辑', '搞笑反转'])
-})
-
-test('video share random schedule stays inside the same day time window', () => {
-  const task = { kind: 'videoShare', time: '13:00', windowEnd: '14:00' }
-  const at = scheduleNextVideoShareAt(task, new Date('2026-07-23T12:10:00+08:00'))
-  const scheduled = new Date(at)
-
-  assert.equal(localDateKey(scheduled), localDateKey(new Date('2026-07-23T12:10:00+08:00')))
-  assert.ok(scheduled.getHours() >= 13)
-  assert.ok(scheduled.getHours() <= 14)
-})
-
-test('video share automation sends no more than ten times per day per task', async () => {
-  const today = localDateKey()
-  const state = {
-    automation: {
-      autoReply: false,
-      blacklist: [],
-      sparks: [{
-        id: 31,
-        name: '小明',
-        kind: 'videoShare',
-        time: '00:00',
-        windowStart: '00:00',
-        windowEnd: '23:59',
-        maxPerDay: 99,
-        enabled: true,
-        videos: [{ url: 'https://v.douyin.com/abc/', title: '冷幽默', note: '最后那个停顿很好笑' }],
-        videoShareState: { date: today, sentToday: 9, usedVideoKeys: [] },
-        nextRunAt: new Date(Date.now() - 1000).toISOString(),
-      }],
-      dailyLimit: 30,
-    },
-    contacts: [{ name: '小明' }],
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const shares = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  service.sendNativeVideoShare = async (name, video, caption, metadata) => {
-    shares.push({ name, video, caption, metadata })
-    service.recordSuccessfulSend(name, 'videoShare')
-    return { ok: true }
-  }
-
-  await service.runAutomation()
-  await service.runAutomation()
-
-  assert.equal(shares.length, 1)
-  assert.equal(shares[0].video.url, 'https://v.douyin.com/abc/')
-  assert.equal(state.sendHistory[0].kind, 'videoShare')
-  assert.equal(state.automation.sparks[0].maxPerDay, 10)
-  assert.equal(state.automation.sparks[0].videoShareState.sentToday, 10)
-  assert.equal(state.automation.sparks[0].lastRunDate, today)
-  assert.equal(state.automation.sparks[0].nextRunAt, '')
-})
-
-test('contact-level video share switch drives random video sending', async () => {
-  const today = localDateKey()
-  const state = {
-    automation: { autoReply: false, blacklist: [], sparks: [], dailyLimit: 30 },
-    contacts: [{
-      name: '小明',
-      profile: {
-        videoShare: {
-          enabled: true,
-          windowStart: '00:00',
-          windowEnd: '23:59',
-          maxPerDay: 2,
-          categories: ['电影剪辑'],
-          videos: [{ url: 'https://v.douyin.com/contact/', title: '冷幽默', note: '后面那个停顿很好笑' }],
-          videoShareState: { date: today, sentToday: 0, usedVideoKeys: [] },
-          nextRunAt: new Date(Date.now() - 1000).toISOString(),
-        },
-      },
-    }],
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const shares = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  service.sendNativeVideoShare = async (name, video, caption, metadata) => {
-    shares.push({ name, video, caption, metadata })
-    service.recordSuccessfulSend(name, 'videoShare')
-    return { ok: true }
-  }
-
-  await service.runAutomation()
-
-  assert.equal(shares.length, 1)
-  assert.equal(shares[0].name, '小明')
-  assert.equal(shares[0].video.url, 'https://v.douyin.com/contact/')
-  assert.equal(state.contacts[0].profile.videoShare.videoShareState.sentToday, 1)
-  assert.equal(state.contacts[0].profile.videoShare.videoShareState.lastShared.category, '电影剪辑')
-  assert.equal(state.contacts[0].profile.videoShare.videoShareState.categoryStats['电影剪辑'].sent, 1)
-  assert.equal(state.logs[0].type, 'video_share_sent')
-  assert.equal(state.logs[0].detail.source, 'contact')
-})
-
-test('contact-level video share can auto discover without provided links', async () => {
-  const today = localDateKey()
-  const state = {
-    automation: { autoReply: false, blacklist: [], sparks: [], dailyLimit: 30 },
-    contacts: [{
-      name: '小明',
-      profile: {
-        personality: '喜欢轻松搞笑',
-        videoShare: {
-          enabled: true,
-          windowStart: '00:00',
-          windowEnd: '23:59',
-          maxPerDay: 2,
-          categories: ['搞笑反转'],
-          discoveryQuery: '搞笑反转',
-          videos: [],
-          videoShareState: { date: today, sentToday: 0, usedVideoKeys: [] },
-          nextRunAt: new Date(Date.now() - 1000).toISOString(),
-        },
-      },
-    }],
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const shares = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  service.discoverVideoShareItem = async (contact, task) => ({
-    url: 'https://www.douyin.com/video/123',
-    title: `搜到：${task.discoveryQuery}`,
-    note: '反转挺轻松',
-    searchTerm: task.discoveryQuery,
-    category: task.categories[0],
-    source: 'douyin_search',
-  })
-  service.sendNativeVideoShare = async (name, video, caption, metadata) => {
-    shares.push({ name, video, caption, metadata })
-    service.recordSuccessfulSend(name, 'videoShare')
-    return { ok: true }
-  }
-
-  await service.runAutomation()
-
-  assert.equal(shares.length, 1)
-  assert.equal(shares[0].name, '小明')
-  assert.equal(shares[0].video.url, 'https://www.douyin.com/video/123')
-  assert.equal(state.contacts[0].profile.videoShare.videoShareState.sentToday, 1)
-  assert.equal(state.contacts[0].profile.videoShare.videoShareState.lastShared.category, '搞笑反转')
-  assert.equal(state.logs[0].type, 'video_share_sent')
-})
-
-test('incoming replies increase the last shared video category preference', async () => {
-  const state = {
-    automation: { autoReply: true, blacklist: [], aiDisabledContacts: [], sparks: [], dailyLimit: 30 },
-    contacts: [{
-      name: '小明',
-      preview: '这个剪得挺好',
-      profile: {
-        videoShare: {
-          enabled: false,
-          categories: ['电影剪辑', '搞笑反转'],
-          videoShareState: {
-            date: localDateKey(),
-            sentToday: 1,
-            usedVideoKeys: [],
-            categoryStats: { 电影剪辑: { sent: 1, replied: 0 } },
-            lastShared: {
-              at: new Date().toISOString(),
-              category: '电影剪辑',
-              url: 'https://www.douyin.com/video/123',
-              engaged: false,
-            },
-          },
-        },
-      },
-    }],
-    sendHistory: [],
-    providers: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const service = new DouyinService({
-    storage,
-    emit: () => {},
-    ai: {
-      hasProvider: () => true,
-      analyzeConversation: (messages) => ({ messages, updatedAt: new Date().toISOString() }),
-      draft: async () => ({ ok: true, text: '哈哈确实不错' }),
-    },
-  })
-  service.window = { isDestroyed: () => false }
-  service.lastSeen.set('小明', '小明:上一条')
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '这个剪得挺好' }] })
-  service.isLastMessageFromMe = async () => false
-  service.selectConversation = async () => null
-  service.sendMessage = async (name, text) => {
-    service.recordSuccessfulSend(name, 'text')
-    return { ok: true, name, text }
-  }
-
-  await service.runAutomation()
-
-  const shareState = state.contacts[0].profile.videoShare.videoShareState
-  assert.equal(shareState.categoryStats['电影剪辑'].replied, 1)
-  assert.equal(shareState.lastShared.engaged, true)
-})
-
-test('video share falls back to saved links when discovery fails', async () => {
-  const today = localDateKey()
-  const state = {
-    contacts: [{ name: '小明' }],
-    settings: {},
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const shares = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.discoverVideoShareItem = async () => { throw new Error('search failed') }
-  service.sendNativeVideoShare = async (name, video, caption, metadata) => {
-    shares.push({ name, video, caption, metadata })
-    return { ok: true }
-  }
-
-  const result = await service.sendVideoShareTask('小明', {
-    kind: 'videoShare',
-    discoveryQuery: '搞笑',
-    videos: [{ url: 'https://v.douyin.com/fallback/', title: '备用', note: '备用亮点' }],
-    videoShareState: { date: today, sentToday: 0, usedVideoKeys: [] },
-  })
-
-  assert.equal(result.video.url, 'https://v.douyin.com/fallback/')
-  assert.equal(shares[0].video.url, 'https://v.douyin.com/fallback/')
-  assert.equal(result.message, result.caption)
-  assert.equal(state.logs[0].type, 'video_share_discovery_fallback')
-})
-
-test('daily limit blocks every send path without time-based cooldown', () => {
-  const now = Date.now()
+test('syncContacts persists merged contact previews from Douyin', async () => {
+  const events = []
   const storage = {
     state: {
-      automation: { dailyLimit: 2 },
-      sendHistory: [
-        { at: new Date(now - 60_000).toISOString(), name: '小明' },
-      ],
+      contacts: [{
+        id: 'Ada',
+        name: 'Ada',
+        preview: 'old preview',
+        profile: { personality: 'warm' },
+        learning: { messages: [{ role: 'contact', text: 'hello' }] },
+      }],
     },
-    get() { return structuredClone(this.state) },
-    update(patch) { this.state = { ...this.state, ...patch } },
-    addLog() {},
+    get() {
+      return structuredClone(this.state)
+    },
+    update(patch) {
+      this.state = { ...this.state, ...patch }
+      return this.get()
+    },
   }
-  const service = new DouyinService({ storage, emit: () => {} })
-
-  assert.equal(service.getSendAllowance('小明', now).ok, true)
-  assert.equal(service.getSendAllowance('小红', now).ok, true)
-  storage.state.sendHistory.push({ at: new Date(now - 120_000).toISOString(), name: '小红' })
-  assert.match(service.getSendAllowance('小刚', now).reason, /每日上限/)
-})
-
-test('auto reply sends once per new incoming message', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [{ keywords: ['消息'], replyText: '收到。' }], sparks: [], dailyLimit: 30, replyDelayMin: 0, replyDelayMax: 0 },
-    sendHistory: [],
-  }
-  let preview = '新消息 1'
-  const sent = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => false },
+  const service = new DouyinService({ storage, emit: (event) => events.push(event) })
+  service.waitForChatReady = async () => ({
+    webContents: {
+      executeJavaScript: async () => [{
+        id: 'Ada',
+        name: 'Ada',
+        avatar: 'avatar.png',
+        fire: 12,
+        preview: 'new preview',
+        messageKey: 'new preview',
+        sentAtLabel: '12:34',
+      }],
+    },
   })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview }] })
-  service.sendMessage = async (name, text) => { sent.push({ name, text }); return { ok: true } }
-  service.lastSeen.set('小明', '旧消息')
 
-  await service.runAutomation()
-  await service.runAutomation()
-  preview = '新消息 2'
-  await service.runAutomation()
+  const result = await service.syncContacts()
 
-  assert.deepEqual(sent, [
-    { name: '小明', text: '收到。' },
-    { name: '小明', text: '收到。' },
-  ])
-})
-
-test('keyword rule replies before AI', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [{ keywords: ['在吗'], replyText: '在的。' }], sparks: [], dailyLimit: 30, cooldown: 0, replyDelayMin: 0, replyDelayMax: 0 },
-    sendHistory: [],
-  }
-  let aiCalls = 0
-  const sent = []
-  const storage = { get: () => structuredClone(state), addLog: () => {} }
-  const service = new DouyinService({
-    storage,
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => { aiCalls += 1; return { ok: true, text: 'AI 回复' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '你在吗' }] })
-  service.sendMessage = async (name, text) => { sent.push({ name, text }); return { ok: true } }
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(aiCalls, 0)
-  assert.deepEqual(sent, [{ name: '小明', text: '在的。' }])
-})
-
-test('automation replies immediately without a second contact sync', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [{ keywords: ['在吗'], replyText: '在的。' }], sparks: [], dailyLimit: 30, cooldown: 0, replyDelayMin: 0, replyDelayMax: 0 },
-    sendHistory: [],
-  }
-  let syncCount = 0
-  let sends = 0
-  const logs = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: (entry) => logs.push(entry) },
-    emit: () => {},
-    ai: { hasProvider: () => false },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => { syncCount += 1; return { contacts: [{ name: '小明', preview: '你在吗' }] } }
-  service.sendMessage = async () => { sends += 1 }
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(sends, 1)
-  assert.equal(syncCount, 1)
-  assert.equal(service.lastSeen.get('小明'), '你在吗')
-  assert.equal(logs.length, 0)
-})
-
-test('automation checks for new messages every second', () => {
-  assert.equal(AUTOMATION_POLL_MS, 1000)
-})
-
-test('AI reply uses saved contact context without blocking on live learning', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-  }
-  let learningCalls = 0
-  const drafted = []
-  const sent = []
-  const contact = { name: '小明', preview: '新消息', learning: { ownerStyle: { summary: '短句' } } }
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '马上回' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [contact] })
-  service.learnConversation = async () => { learningCalls += 1 }
-  service.sendMessage = async (name, text) => { sent.push({ name, text }) }
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(learningCalls, 0)
-  assert.equal(drafted[0].contact.learning.ownerStyle.summary, '短句')
-  assert.deepEqual(sent, [{ name: '小明', text: '【AI · 当前模型】马上回' }])
+  assert.equal(result.contacts[0].preview, 'new preview')
+  assert.equal(storage.state.contacts[0].preview, 'new preview')
+  assert.deepEqual(storage.state.contacts[0].profile, { personality: 'warm' })
+  assert.equal(storage.state.contacts[0].learning.messages[0].text, 'hello')
+  assert.equal(events.at(-1).type, 'contacts')
+  assert.equal(events.at(-1).payload.contacts[0].preview, 'new preview')
 })
 
 test('automation handles a new media bubble when the conversation preview is unchanged', async () => {
   const preview = '\u5206\u4eab[\u56fe\u96c6]'
   const listKey = `${preview}\u241f1`
   const sent = []
-  const state = {
-    settings: {},
-    automation: {
-      autoReply: true,
-      paused: false,
-      rules: [{ enabled: true, keywords: ['\u5206\u4eab'], replyText: '\u6536\u5230' }],
-      sparks: [],
+  const storage = {
+    state: {
+      settings: {},
+      automation: {
+        autoReply: true,
+        paused: false,
+        rules: [{ enabled: true, keywords: ['\u5206\u4eab'], replyText: '\u6536\u5230' }],
+        sparks: [],
+      },
+      contacts: [],
     },
-    contacts: [],
-    sendHistory: [],
+    get() {
+      return structuredClone(this.state)
+    },
+    update(patch) {
+      this.state = { ...this.state, ...patch }
+      return this.get()
+    },
   }
-  const service = new DouyinService({
-    storage: {
-      get: () => structuredClone(state),
-      update: (patch) => Object.assign(state, patch),
-      addLog: () => {},
-    },
-    emit: () => {},
-  })
+  const service = new DouyinService({ storage })
   service.window = { isDestroyed: () => false }
   service.lastSeen.set('Ada', listKey)
   service.getStatus = async () => ({ connected: true })
@@ -1107,15 +169,21 @@ test('automation handles a new media bubble when the conversation preview is unc
       name: 'Ada',
       preview,
       messageKey: listKey,
-      unread: true,
+      unread: '1',
       sentAtLabel: '\u521a\u521a',
     }],
   })
-  service.captureLatestIncomingMessageIdentity = async () => ({ role: 'contact', fingerprint: 'bubble-2' })
+  service.captureLatestIncomingMessageIdentity = async () => ({
+    role: 'contact',
+    fingerprint: 'bubble-2',
+  })
   service.getSendAllowance = () => ({ ok: true })
+  service.isLastMessageFromMe = async () => false
   service.recordVideoShareEngagement = () => null
   service.recordConversationMessage = (_name, _role, _text, contact) => contact
-  service.sendMessage = async (name, text) => { sent.push({ name, text }) }
+  service.sendMessage = async (name, text) => {
+    sent.push({ name, text })
+  }
 
   await service.runAutomation()
   await service.runAutomation()
@@ -1123,11 +191,407 @@ test('automation handles a new media bubble when the conversation preview is unc
   assert.deepEqual(sent, [{ name: 'Ada', text: '\u6536\u5230' }])
 })
 
-test('latest-message identity browser script remains valid JavaScript', async () => {
+test('automation replies to a recent unread media preview on first sync', async () => {
+  const preview = '\u5206\u4eab[\u89c6\u9891]'
+  const sent = []
+  const storage = {
+    state: {
+      settings: {},
+      automation: {
+        autoReply: true,
+        paused: false,
+        rules: [{ enabled: true, keywords: ['\u5206\u4eab'], replyText: '\u6536\u5230' }],
+        sparks: [],
+      },
+      contacts: [],
+    },
+    get() {
+      return structuredClone(this.state)
+    },
+    update(patch) {
+      this.state = { ...this.state, ...patch }
+      return this.get()
+    },
+  }
+  const service = new DouyinService({ storage })
+  service.window = { isDestroyed: () => false }
+  service.getStatus = async () => ({ connected: true })
+  service.syncContacts = async () => ({
+    contacts: [{
+      id: 'Ada',
+      name: 'Ada',
+      preview,
+      messageKey: preview,
+      unread: '1',
+      sentAtLabel: '\u521a\u521a',
+    }],
+  })
+  service.captureLatestIncomingMessageIdentity = async () => ({
+    role: 'contact',
+    fingerprint: 'first-media',
+  })
+  service.getSendAllowance = () => ({ ok: true })
+  service.isLastMessageFromMe = async () => false
+  service.recordVideoShareEngagement = () => null
+  service.recordConversationMessage = (_name, _role, _text, contact) => contact
+  service.sendMessage = async (name, text) => {
+    sent.push({ name, text })
+  }
+
+  await service.runAutomation()
+
+  assert.deepEqual(sent, [{ name: 'Ada', text: '\u6536\u5230' }])
+})
+
+test('automation falls back to text AI when broad media preview detection has replyable text', async () => {
+  const preview = '\u4f60\u770b\u770b\u6ca1\u9f3b\u5b50\u6ca1\u773c\ud83d\udc40'
+  const sent = []
+  const drafts = []
+  const logs = []
+  const storage = {
+    state: {
+      settings: { showAiModelLabel: false },
+      providers: [{ name: 'mock', model: 'mock-model', capabilities: ['vision'] }],
+      automation: {
+        autoReply: true,
+        paused: false,
+        rules: [],
+        sparks: [],
+      },
+      contacts: [],
+    },
+    get() {
+      return structuredClone(this.state)
+    },
+    update(patch) {
+      this.state = { ...this.state, ...patch }
+      return this.get()
+    },
+  }
+  const service = new DouyinService({ storage })
+  service.ai = {
+    hasProvider: () => true,
+    analyzeConversation: (messages) => ({ messages }),
+    draft: async (payload) => {
+      drafts.push(payload)
+      return { ok: true, text: '\u54c8\u54c8\u8fd9\u4e2a\u5f62\u5bb9\u592a\u6709\u753b\u9762\u4e86', model: 'mock-model', provider: 'mock' }
+    },
+  }
+  service.log = (type, message, meta) => logs.push({ type, message, meta })
+  service.window = { isDestroyed: () => false }
+  service.getStatus = async () => ({ connected: true })
+  service.syncContacts = async () => ({
+    contacts: [{
+      id: 'Ada',
+      name: 'Ada',
+      preview,
+      messageKey: preview,
+      unread: '1',
+      sentAtLabel: '\u521a\u521a',
+    }],
+  })
+  service.captureLatestIncomingMessageIdentity = async () => ({
+    role: 'contact',
+    fingerprint: 'text-that-looks-media',
+  })
+  service.captureLatestIncomingMedia = async () => normalizeCapturedMedia({
+    frames: [],
+    mediaKind: 'media',
+    confidence: 'none',
+    reason: 'no_visible_media_bubble',
+  }, 'video')
+  service.selectConversation = async () => null
+  service.getSendAllowance = () => ({ ok: true })
+  service.isLastMessageFromMe = async () => false
+  service.recordVideoShareEngagement = () => null
+  service.recordConversationMessage = (_name, _role, _text, contact) => contact
+  service.sendMessage = async (name, text) => {
+    sent.push({ name, text })
+  }
+
+  await service.runAutomation()
+
+  assert.equal(drafts.length, 1)
+  assert.equal(drafts[0].incoming, preview)
+  assert.equal(drafts[0].videoFrames, undefined)
+  assert.deepEqual(sent, [{ name: 'Ada', text: '\u54c8\u54c8\u8fd9\u4e2a\u5f62\u5bb9\u592a\u6709\u753b\u9762\u4e86' }])
+  assert.equal(logs.some((entry) => entry.type === 'video_unreadable' || entry.type === 'media_uncertain'), false)
+})
+
+test('public-page recognition modes skip frames and audio', () => {
+  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }), {
+    strength: 'comments20',
+    maxFrames: 0,
+    audio: false,
+    commentLimit: 20,
+    commentWaitMs: 3500,
+    commentScrolls: 4,
+    publicPageOnly: true,
+  })
+
+  assert.deepEqual(videoRecognitionOptions({ videoRecognitionStrength: 'comments30' }), {
+    strength: 'comments30',
+    maxFrames: 0,
+    audio: false,
+    commentLimit: 30,
+    commentWaitMs: 4500,
+    commentScrolls: 6,
+    publicPageOnly: true,
+  })
+})
+
+test('shared-comment previews are treated as media and unavailable replies are unsafe', () => {
+  assert.equal(mediaPreviewKind('分享[评论]'), 'share')
+  assert.equal(mediaPreviewKind('分享 [ 评论 ]'), 'share')
+  assert.equal(isUnavailableMediaReply('我这边只显示分享评论，没看到内容诶，你截我看看呀'), true)
+  assert.equal(isUnavailableMediaReply('这个梗还挺戳的'), false)
+})
+
+test('comment context supports up to thirty comments and longer copy', () => {
+  const comments = Array.from({ length: 35 }, (_, index) => `comment ${index + 1}`)
+  const description = '文案'.repeat(260)
+  const normalized = normalizeCommentContext({ description, comments }, 30)
+
+  assert.equal(normalized.videoComments.length, 30)
+  assert.equal(normalized.videoComments.at(-1), 'comment 30')
+  assert.equal(normalized.videoPageDescription.length, 500)
+})
+
+test('public-page modes fall back to frame capture when public context is unavailable', () => {
+  const recognition = videoRecognitionOptions({ videoRecognitionStrength: 'comments20' })
+  const mediaCapture = normalizeCapturedMedia({
+    frames: [],
+    mediaKind: 'video',
+    detectedVideo: true,
+    confidence: 'none',
+    reason: 'public_page_only',
+  }, 'video')
+
+  assert.equal(hasPublicMediaContext(mediaCapture), false)
+  assert.equal(shouldUseVideoFrameFallback(recognition, mediaCapture), true)
+})
+
+test('public-page modes skip frame capture when public context is available', () => {
+  const recognition = videoRecognitionOptions({ videoRecognitionStrength: 'comments20' })
+  const mediaCapture = normalizeCapturedMedia({
+    frames: [],
+    mediaKind: 'video',
+    videoPageDescription: '这个职场反转后面有个点挺妙呀',
+    videoComments: ['这段太真实了', '最后反转笑死'],
+    confidence: 'medium',
+    reason: 'public_page_only',
+  }, 'video')
+
+  assert.equal(hasPublicMediaContext(mediaCapture), true)
+  assert.equal(shouldUseVideoFrameFallback(recognition, mediaCapture), false)
+})
+
+test('public text and comments are usable without frames', () => {
+  const mediaCapture = normalizeCapturedMedia({
+    frames: [],
+    mediaKind: 'video',
+    videoPageDescription: '这个职场反转后面有个点挺妙呀',
+    videoComments: ['这段太真实了', '最后反转笑死'],
+    confidence: 'medium',
+    reason: 'public_page_only',
+  }, 'video')
+
+  assert.equal(hasPublicMediaContext(mediaCapture), true)
+  assert.equal(mediaCapture.frames.length, 0)
+  assert.equal(mediaCapture.videoComments.length, 2)
+})
+
+test('shared-comment cards preserve the visible comment and copy without using the author as a title', () => {
+  const cardText = [
+    '分享 @zmjjkk 的评论',
+    '起码累着自己了😍',
+    '来自视频',
+    '“我去，不早说” #冷知识 #生活小妙招',
+  ].join('\n')
+
+  const visible = normalizeVisibleMediaContext(cardText, 20)
+  assert.equal(visible.videoPageTitle, '')
+  assert.equal(visible.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(visible.videoSharedComment, '起码累着自己了😍')
+  assert.deepEqual(visible.videoComments, ['起码累着自己了😍'])
+  const compact = normalizeVisibleMediaContext(cardText.replace(/\n/g, ' '), 20)
+  assert.equal(compact.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.deepEqual(compact.videoComments, ['起码累着自己了😍'])
+  const graphicCard = normalizeVisibleMediaContext(cardText.replace('来自视频', '来自图文'), 20)
+  assert.equal(graphicCard.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+
+  const merged = mergePublicMediaContext({
+    videoPageTitle: 'zmjjkk的作品 - 抖音',
+    videoPageAuthor: '@zmjjkk',
+    videoComments: [],
+    videoCommentError: 'public page unavailable',
+  }, cardText, 20)
+  assert.equal(merged.videoPageTitle, '')
+  assert.equal(merged.videoPageDescription, '“我去，不早说” #冷知识 #生活小妙招')
+  assert.equal(merged.videoSharedComment, '起码累着自己了😍')
+  assert.deepEqual(merged.videoComments, ['起码累着自己了😍'])
+})
+
+test('comment20 mode reads the current public comment page when a card has no URL', async () => {
+  const comments = Array.from({ length: 20 }, (_, index) => `公开热评${index + 1}`)
+  const scripts = []
+  const service = new DouyinService({
+    storage: {
+      get: () => ({ settings: {} }),
+      addLog: () => {},
+    },
+  })
+  const sourceWindow = {
+    webContents: {
+      executeJavaScript: async (script) => {
+        scripts.push(script)
+        assert.doesNotThrow(() => new Function(script))
+        if (script.includes('const href =')) return { href: 'https://www.douyin.com/video/123', isPublicVideo: true }
+        if (script.includes('const scrollers =')) return true
+        if (script.includes('const limit =')) return { title: '标题', description: '视频文案', author: '作者', comments, source: 'https://www.douyin.com/video/123' }
+        return false
+      },
+    },
+  }
+
+  const publicContext = await service.readVideoCommentContext(
+    { shareUrl: '' },
+    '测试联系人',
+    { commentLimit: 20, commentWaitMs: 0, commentScrolls: 1 },
+    sourceWindow,
+  )
+  assert.equal(publicContext.videoComments.length, 20)
+  assert.equal(publicContext.videoComments.at(-1), '公开热评20')
+  assert.equal(scripts.some((script) => script.includes('const href =')), true)
+
+  const merged = mergePublicMediaContext(publicContext, ['分享 @作者 的评论', '反讽评论🤣', '来自视频', '视频文案'].join('\n'), 20)
+  assert.equal(merged.videoSharedComment, '反讽评论🤣')
+  assert.equal(merged.videoComments[0], '反讽评论🤣')
+  assert.equal(merged.videoComments.length, 20)
+  assert.equal(merged.videoComments.includes('公开热评19'), true)
+  assert.equal(merged.videoComments.includes('公开热评20'), false)
+})
+
+test('public context never treats a bare card author as the video title', () => {
+  const merged = mergePublicMediaContext({
+    videoPageTitle: 'DreamCars Global',
+    videoPageAuthor: '',
+    videoPageDescription: '',
+    videoComments: [],
+  }, 'DreamCars Global', 20)
+
+  assert.equal(merged.videoPageTitle, '')
+  assert.equal(merged.videoPageDescription, '')
+})
+
+test('public comment items keep only the comment body', () => {
+  const itemText = [
+    '\u2022\u0300\u1d17\u2022\u0301',
+    '...',
+    '\u9a81\u9f99\u903c\u51fa\u4e86\u795e\u7136\u540e\u5929\u73919300\u903c\u51fa\u4e86\u771f\u795e\u9a81\u9f998\u81f3\u5c0a',
+    '3\u5468\u524d\u00b7\u6d59\u6c5f',
+    '6235',
+    '\u5206\u4eab',
+    '\u56de\u590d',
+    '\u5c55\u5f0087\u6761\u56de\u590d',
+  ].join('\n')
+
+  assert.equal(
+    extractPublicCommentItemText(itemText),
+    '\u9a81\u9f99\u903c\u51fa\u4e86\u795e\u7136\u540e\u5929\u73919300\u903c\u51fa\u4e86\u771f\u795e\u9a81\u9f998\u81f3\u5c0a',
+  )
+})
+
+test('Douyin share cards expose the public video ID through React message props', () => {
+  const itemId = '7667524409142862409'
+  const card = {
+    querySelectorAll: () => [],
+    __reactFiber$test: {
+      memoizedProps: { className: 'MessageItemShareAwemecontainer' },
+      return: {
+        memoizedProps: {
+          message: {
+            parsedContent: {
+              itemId,
+              share_id: `2222550868838032_1785734174567_${itemId}`,
+            },
+          },
+        },
+        return: null,
+      },
+    },
+  }
+
+  assert.equal(extractReactAwemeId(card), itemId)
+})
+
+test('comment20 mode keeps comments captured from the public comment API', async () => {
+  const apiComments = [
+    '骁龙逼出了神然后天玑9300逼出了真神骁龙8至尊',
+    '你惊动了一位神',
+  ]
+  const service = new DouyinService({
+    storage: {
+      get: () => ({ settings: {} }),
+      addLog: () => {},
+    },
+  })
+  const sourceWindow = {
+    webContents: {
+      executeJavaScript: async (script) => {
+        assert.doesNotThrow(() => new Function(script))
+        if (script.includes('const href =')) return { href: 'https://www.douyin.com/video/123', isPublicVideo: true }
+        if (script.includes('const scrollers =')) return true
+        if (script.includes('const limit =')) {
+          return {
+            title: 'DreamCars Global',
+            description: '',
+            author: '',
+            apiComments,
+            comments: [],
+            source: 'https://www.douyin.com/video/123',
+          }
+        }
+        return false
+      },
+    },
+  }
+
+  const publicContext = await service.readVideoCommentContext(
+    { shareUrl: '' },
+    '测试联系人',
+    { commentLimit: 20, commentWaitMs: 0, commentScrolls: 1 },
+    sourceWindow,
+  )
+
+  assert.deepEqual(publicContext.videoComments, apiComments)
+})
+
+test('media replies exclude author names and reject unloaded-media language', () => {
+  const media = normalizeVideoInput({
+    mediaKind: 'video',
+    videoPageAuthor: 'xiang先生',
+    videoPageDescription: '这个小妙招居然真有用',
+    videoSharedComment: '起码累着自己了😍',
+    videoComments: ['起码累着自己了😍'],
+  })
+  const messages = buildChatMessages({ name: '小明' }, '分享[评论]', [], '', media)
+  const prompt = String(messages.at(-1).content)
+
+  assert.match(prompt, /这个小妙招居然真有用/)
+  assert.match(prompt, /起码累着自己了/)
+  assert.match(prompt, /当前分享的评论：起码累着自己了/)
+  assert.doesNotMatch(prompt, /xiang先生/)
+  assert.match(replyQualityIssues('还是没加载出来，截个图吧', true).join('、'), /媒体未加载或要求对方截图/)
+})
+
+test('latest-message identity marks the row reused by media capture', async () => {
   const service = new DouyinService({ storage: { get: () => ({ settings: {} }) } })
+  const scripts = []
   service.selectConversation = async () => ({
     webContents: {
       executeJavaScript: async (script) => {
+        scripts.push(script)
         assert.doesNotThrow(() => new Function(script))
         return { role: 'contact', fingerprint: 'msg-test', media: true }
       },
@@ -1138,463 +602,147 @@ test('latest-message identity browser script remains valid JavaScript', async ()
   const result = await service.captureLatestIncomingMessageIdentity('Ada')
   assert.equal(result.fingerprint, 'msg-test')
   assert.equal(result.role, 'contact')
+  assert.equal(scripts.length, 1)
+  assert.match(scripts[0], /data-xusheng-latest-message/)
+  assert.match(scripts[0], /MessageBoxContentrowBox/)
 })
 
-test('automatic AI replies pass incoming message time to the model', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-  }
-  const drafted = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async (payload) => { drafted.push(payload); return { ok: true, text: '刚看到，昨晚那么晚还没睡啊' } } },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '睡不着', sentAtLabel: '01:00', sentAt: '2026-07-22T01:00:00+08:00' }] })
-  service.selectConversation = async () => null
-  service.sendMessage = async () => ({ ok: true })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.equal(drafted[0].incomingMeta.sentAtLabel, '01:00')
-  assert.equal(drafted[0].incomingMeta.sentAt, '2026-07-22T01:00:00+08:00')
-})
-
-test('automatic AI replies do not send when the model chooses no reply', async () => {
-  const state = {
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const service = new DouyinService({
-    storage: {
-      get: () => structuredClone(state),
-      update: (patch) => Object.assign(state, patch),
-      addLog: (entry) => state.logs.unshift(entry),
+test('media capture prefers the latest row marked by identity capture', async () => {
+  const service = new DouyinService({ storage: { get: () => ({ settings: {} }) } })
+  const scripts = []
+  service.selectConversation = async () => ({
+    webContents: {
+      executeJavaScript: async (script) => {
+        scripts.push(script)
+        assert.doesNotThrow(() => new Function(script))
+        return null
+      },
     },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => ({ ok: true, text: '', labeledText: '' }) },
   })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '昨晚吃夜宵吗', sentAtLabel: '昨天' }] })
-  service.selectConversation = async () => null
-  service.sendMessage = async () => assert.fail('no-reply AI decisions must not be sent')
-  service.lastSeen.set('小明', '旧消息')
+  service.waitForEditor = async () => true
 
-  await service.runAutomation()
-
-  assert.equal(service.lastSeen.get('小明'), '旧消息')
-  assert.equal(state.logs[0].type, 'ai_empty')
+  const result = await service.captureLatestIncomingMedia('测试联系人', videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }))
+  assert.equal(result.reason, 'no_visible_media_bubble')
+  assert.match(scripts[0], /__xushengFetchHook/)
+  assert.match(scripts[1], /querySelector\('\[data-xusheng-latest-message="contact"\]'\)/)
 })
 
-test('automatic AI replies omit the model label when the setting is disabled', async () => {
-  const state = {
-    settings: { showAiModelLabel: false },
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
+test('public-page capture accepts a matched numeric video ID without clicking the card', async () => {
+  const currentId = '7660538946628645364'
+  const pageWindow = {
+    __xushengVideoIds: [currentId],
+    __xushengVideoInfo: new Map([[
+      currentId,
+      { author: 'current-author', desc: 'current-description', title: 'current-title', at: Date.now() },
+    ]]),
   }
-  const sent = []
-  const service = new DouyinService({
-    storage: { get: () => structuredClone(state), addLog: () => {} },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => ({ ok: true, text: '我在呢', labeledText: '【AI · test-model】我在呢', model: 'test-model', aiLabel: 'AI · test-model' }) },
-  })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: '小明', preview: '在吗' }] })
-  service.sendMessage = async (name, text) => sent.push({ name, text })
-  service.lastSeen.set('小明', '旧消息')
-
-  await service.runAutomation()
-
-  assert.deepEqual(sent, [{ name: '小明', text: '我在呢' }])
-})
-
-test('draft-only AI replies record suggestions without sending or using send limits', async () => {
-  const state = {
-    settings: { aiReplyDraftOnly: true },
-    automation: { autoReply: true, aiDisabledContacts: [], blacklist: [], rules: [], sparks: [], dailyLimit: 1 },
-    sendHistory: [{ at: new Date().toISOString(), name: 'someone', kind: 'text' }],
-    logs: [],
+  const webContents = {
+    sendInputEvent: () => {
+      throw new Error('matched hook ID should not click the card')
+    },
+    executeJavaScript: async (script) => {
+      if (script.includes('if (window.__xushengFetchHook) return true')) return true
+      if (script.includes("document.querySelectorAll('[data-xusheng-media-capture]')")) {
+        return {
+          isVideo: true,
+          duration: 0,
+          videoUrl: '',
+          shareUrl: '',
+          shareText: 'current-author',
+          domHint: null,
+          playIconPoint: null,
+          coverPoint: null,
+          posterUrl: '',
+          openPoint: { x: 420, y: 609 },
+          videoRect: null,
+          rect: { x: 300, y: 400, width: 240, height: 180 },
+        }
+      }
+      if (script.includes('let fresh = 0')) return 1
+      if (script.includes('const cardText =')) return vm.runInNewContext(script, { window: pageWindow })
+      throw new Error(`Unexpected script: ${script.slice(0, 80)}`)
+    },
   }
   const service = new DouyinService({
     storage: {
-      get: () => structuredClone(state),
-      update: (patch) => Object.assign(state, patch),
-      addLog: (entry) => state.logs.unshift(entry),
+      get: () => ({ settings: {} }),
+      addLog: () => {},
     },
-    emit: () => {},
-    ai: { hasProvider: () => true, draft: async () => ({ ok: true, text: 'I can reply like this.' }) },
   })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'hello' }] })
-  service.isLastMessageFromMe = async () => false
-  service.selectConversation = async () => null
-  service.sendMessage = async () => assert.fail('draft-only mode must not send messages')
-  service.lastSeen.set('someone', 'old')
+  service.selectConversation = async () => ({ webContents })
+  service.waitForEditor = async () => true
+  let capturedShareUrl = ''
+  service.readVideoCommentContext = async (media) => {
+    capturedShareUrl = media.shareUrl
+    return {}
+  }
 
-  await service.runAutomation()
+  const result = await service.captureLatestIncomingMedia(
+    'Ada',
+    videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }),
+  )
 
-  assert.equal(service.lastSeen.get('someone'), 'hello')
-  assert.equal(state.logs[0].type, 'reply_drafted')
-  assert.equal(state.logs[0].detail.name, 'someone')
-  assert.equal(state.logs[0].detail.text, '【AI · 当前模型】I can reply like this.')
-  assert.equal(state.sendHistory.length, 1)
+  assert.equal(capturedShareUrl, `https://www.douyin.com/video/${currentId}`)
+  assert.equal(result.videoPageUrlFound, true)
 })
 
-test('spark completion persists across service restarts', async () => {
-  const now = new Date()
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const state = {
-    automation: { autoReply: false, blacklist: [], sparks: [{ id: 7, name: '小明', time, kind: 'text', message: '续火花', enabled: true }], dailyLimit: 30, cooldown: 0 },
-    sendHistory: [],
-    logs: [],
+test('public-page capture never treats an unrelated historical video as the current card', async () => {
+  const historicalId = '7660538946628645364'
+  const pageWindow = {
+    __xushengVideoIds: [historicalId],
+    __xushengVideoInfo: new Map([[
+      historicalId,
+      { author: 'old-author', desc: 'old-description', title: 'old-title', at: Date.now() },
+    ]]),
   }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  let sends = 0
-  const createService = () => {
-    const service = new DouyinService({ storage, emit: () => {} })
-    service.window = { isDestroyed: () => false }
-    service.getStatus = async () => ({ connected: true })
-    service.syncContacts = async () => ({ contacts: [] })
-    service.isLastMessageFromMe = async () => false
-    service.sendTask = async () => { sends += 1; return { ok: true } }
-    return service
-  }
-
-  await createService().runAutomation()
-  await createService().runAutomation()
-
-  assert.equal(sends, 1)
-  assert.match(state.automation.sparks[0].lastRunDate, /^\d{4}-\d{2}-\d{2}$/)
-})
-
-test('missed spark tasks are detected and filled later the same day', async () => {
-  const state = {
-    automation: {
-      autoReply: false,
-      blacklist: [],
-      sparks: [{ id: 8, name: '小明', time: '00:00', kind: 'text', message: '续火花', enabled: true }],
-      dailyLimit: 30,
+  let clicked = false
+  const webContents = {
+    sendInputEvent: (event) => {
+      if (event.type === 'mouseUp') clicked = true
     },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const service = new DouyinService({ storage, emit: () => {} })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  service.isLastMessageFromMe = async () => false
-  let sends = 0
-  service.sendTask = async () => { sends += 1; return { ok: true } }
-
-  await service.runAutomation()
-
-  assert.equal(sends, 1)
-  assert.match(state.automation.sparks[0].lastRunDate, /^\d{4}-\d{2}-\d{2}$/)
-  assert.equal(state.logs[0].type, 'spark_sent')
-})
-
-test('spark tasks send at their scheduled time when no conversation was sent today', async () => {
-  const state = {
-    automation: {
-      autoReply: false,
-      blacklist: [],
-      sparks: [{ id: 9, name: '小明', time: '00:00', kind: 'text', message: '续火花', enabled: true }],
-      dailyLimit: 30,
+    executeJavaScript: async (script) => {
+      if (script.includes('if (window.__xushengFetchHook) return true')) return true
+      if (script.includes("document.querySelectorAll('[data-xusheng-media-capture]')")) {
+        return {
+          isVideo: true,
+          duration: 0,
+          videoUrl: '',
+          shareUrl: '',
+          shareText: 'current-author',
+          domHint: null,
+          playIconPoint: null,
+          coverPoint: null,
+          posterUrl: '',
+          openPoint: { x: 420, y: 609 },
+          videoRect: null,
+          rect: { x: 300, y: 400, width: 240, height: 180 },
+        }
+      }
+      if (script.includes('let fresh = 0')) return 1
+      if (script.includes('const cardText =')) return vm.runInNewContext(script, { window: pageWindow })
+      if (script === 'location.href') return 'https://www.douyin.com/chat'
+      if (script.includes('const globals =')) return ''
+      if (script.includes('const closeBtn =')) return false
+      if (script.includes('const last = ids.at(-1)')) return historicalId
+      if (script.includes('const authors =')) return { len: 1, last: historicalId, all: [historicalId], authors: ['old-author'] }
+      throw new Error(`Unexpected script: ${script.slice(0, 80)}`)
     },
-    sendHistory: [],
-    logs: [],
   }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const service = new DouyinService({ storage, emit: () => {} })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  let sends = 0
-  service.sendTask = async () => { sends += 1; return { ok: true } }
-
-  await service.runAutomation()
-
-  assert.equal(sends, 1)
-  assert.match(state.automation.sparks[0].lastRunDate, /^\d{4}-\d{2}-\d{2}$/)
-  assert.equal(state.logs[0].type, 'spark_sent')
-})
-
-test('spark tasks skip when this contact already has a sent conversation today', async () => {
-  const state = {
-    automation: { autoReply: false, blacklist: [], sparks: [{ id: 11, name: '小明', time: '00:00', kind: 'text', message: '续火花', enabled: true }], dailyLimit: 30 },
-    sendHistory: [{ at: new Date().toISOString(), name: '小明', kind: 'text' }],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const service = new DouyinService({ storage, emit: () => {} })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  service.sendTask = async () => assert.fail('a contact with a sent message today must not receive a spark task')
-
-  await service.runAutomation()
-
-  assert.match(state.automation.sparks[0].lastRunDate, /^\d{4}-\d{2}-\d{2}$/)
-  assert.equal(state.logs[0].type, 'spark_fill_skipped')
-  assert.equal(state.logs[0].detail.reason, 'sent_today')
-})
-
-test('spark tasks do not depend on last-message ownership', async () => {
-  const state = {
-    automation: {
-      autoReply: false,
-      blacklist: [],
-      sparks: [{ id: 10, name: '小明', time: '00:00', kind: 'text', message: '续火花', enabled: true }],
-      dailyLimit: 30,
+  const service = new DouyinService({
+    storage: {
+      get: () => ({ settings: {} }),
+      addLog: () => {},
     },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => { state.logs.unshift(entry) },
-  }
-  const service = new DouyinService({ storage, emit: () => {} })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [] })
-  let sends = 0
-  service.sendTask = async () => { sends += 1; return { ok: true } }
+  })
+  service.selectConversation = async () => ({ webContents })
+  service.waitForEditor = async () => true
+  service.readVideoCommentContext = async () => ({})
 
-  await service.runAutomation()
+  const result = await service.captureLatestIncomingMedia(
+    'Ada',
+    videoRecognitionOptions({ videoRecognitionStrength: 'comments20' }),
+  )
 
-  assert.equal(sends, 1)
-  assert.match(state.automation.sparks[0].lastRunDate, /^\d{4}-\d{2}-\d{2}$/)
-  assert.equal(state.logs[0].type, 'spark_sent')
-})
-
-test('daily send limit does not consume an incoming message', async () => {
-  const now = Date.now()
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [], sparks: [], dailyLimit: 1 },
-    sendHistory: [{ at: new Date(now - 1000).toISOString(), name: 'someone', kind: 'text' }],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'new incoming' }] })
-  service.lastSeen.set('someone', 'old incoming')
-  service.sendMessage = async () => assert.fail('daily limit must block sending')
-
-  await service.runAutomation()
-
-  assert.equal(service.lastSeen.get('someone'), 'old incoming')
-  assert.equal(state.logs[0].type, 'send_blocked')
-})
-
-test('paused automation keeps a new message pending until resumed', async () => {
-  const state = {
-    automation: { autoReply: true, paused: true, blacklist: [], aiDisabledContacts: [], rules: [{ keywords: ['hello'], replyText: 'received' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: () => {},
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'hello' }] })
-  service.lastSeen.set('someone', 'old')
-  const sent = []
-  service.sendMessage = async (name, text) => sent.push({ name, text })
-
-  await service.runAutomation()
-  assert.equal(service.lastSeen.get('someone'), 'old')
-  assert.equal(sent.length, 0)
-
-  state.automation.paused = false
-  await service.runAutomation()
-  assert.deepEqual(sent, [{ name: 'someone', text: 'received' }])
-})
-
-test('re-enabling a contact processes the message that was blocked', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: ['someone'], rules: [{ keywords: ['hello'], replyText: 'received' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: () => {},
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'hello' }] })
-  service.lastSeen.set('someone', 'hello')
-  const sent = []
-  service.sendMessage = async (name, text) => sent.push({ name, text })
-
-  await service.runAutomation()
-  state.automation.aiDisabledContacts = []
-  await service.runAutomation()
-
-  assert.deepEqual(sent, [{ name: 'someone', text: 'received' }])
-})
-
-test('a weak list fromMe=false marker is verified before replying', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [{ keywords: ['reply'], replyText: 'received' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'my reply', fromMe: false }] })
-  service.lastSeen.set('someone', 'old')
-  service.isLastMessageFromMe = async () => true
-  service.sendMessage = async () => assert.fail('our own message must not trigger an automatic reply')
-
-  await service.runAutomation()
-
-  assert.equal(state.logs[0].type, 'auto_skip')
-  assert.equal(service.lastSeen.get('someone'), 'my reply')
-})
-
-test('incoming bracketed sticker previews are not skipped by a weak self-message check', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [{ keywords: ['[嗨]'], replyText: '嗨嗨' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const sent = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: '[嗨]', fromMe: null }] })
-  service.lastSeen.set('someone', 'old')
-  service.isLastMessageFromMe = async () => true
-  service.sendMessage = async (name, text) => { sent.push({ name, text }); service.lastSeen.set(name, text) }
-
-  await service.runAutomation()
-
-  assert.deepEqual(sent, [{ name: 'someone', text: '嗨嗨' }])
-  assert.notEqual(state.logs[0]?.type, 'auto_skip')
-})
-
-test('recent own bracketed sticker previews are skipped after emoji send uncertainty', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [{ keywords: ['[morning]'], replyText: 'must not send' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: '[morning]', fromMe: null }] })
-  service.lastSeen.set('someone', 'old')
-  service.rememberSelfPreview('someone', '[morning]')
-  service.isLastMessageFromMe = async () => false
-  service.sendMessage = async () => assert.fail('our own recent emoji preview must not trigger an automatic reply')
-
-  await service.runAutomation()
-
-  assert.equal(state.logs[0].type, 'auto_skip')
-  assert.equal(service.lastSeen.get('someone'), '[morning]')
-})
-
-test('stale own bracketed sticker previews can still be treated as incoming', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [{ keywords: ['[morning]'], replyText: 'morning back' }], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const sent = []
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: '[morning]', fromMe: null }] })
-  service.lastSeen.set('someone', 'old')
-  service.lastSent.set('someone', '[morning]')
-  service.lastSentAt.set('someone', Date.now() - 120_000)
-  service.isLastMessageFromMe = async () => false
-  service.sendMessage = async (name, text) => { sent.push({ name, text }); service.lastSeen.set(name, text) }
-
-  await service.runAutomation()
-
-  assert.deepEqual(sent, [{ name: 'someone', text: 'morning back' }])
-  assert.notEqual(state.logs[0]?.type, 'auto_skip')
-})
-
-test('missing provider keeps an incoming message pending', async () => {
-  const state = {
-    automation: { autoReply: true, paused: false, blacklist: [], aiDisabledContacts: [], rules: [], sparks: [], dailyLimit: 30 },
-    sendHistory: [],
-    logs: [],
-  }
-  const storage = {
-    get: () => structuredClone(state),
-    update: (patch) => Object.assign(state, patch),
-    addLog: (entry) => state.logs.unshift(entry),
-  }
-  const service = new DouyinService({ storage, emit: () => {}, ai: { hasProvider: () => false } })
-  service.window = { isDestroyed: () => false }
-  service.getStatus = async () => ({ connected: true })
-  service.syncContacts = async () => ({ contacts: [{ name: 'someone', preview: 'hello' }] })
-  service.lastSeen.set('someone', 'old')
-
-  await service.runAutomation()
-
-  assert.equal(service.lastSeen.get('someone'), 'old')
-  assert.equal(state.logs[0].type, 'ai_unavailable')
+  assert.equal(clicked, true)
+  assert.equal(result.videoPageUrlFound, false)
 })

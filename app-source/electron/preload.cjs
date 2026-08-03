@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('desktopApp', {
     setPrimaryProvider: (index) => ipcRenderer.invoke('ai:set-primary-provider', index),
     testProvider: (index) => ipcRenderer.invoke('ai:test-provider', index),
     draft: (payload) => ipcRenderer.invoke('ai:draft', payload),
+    getSkills: () => ipcRenderer.invoke('ai:get-skills'),
+    saveSkills: (skills) => ipcRenderer.invoke('ai:save-skills', skills),
+    importSkills: (rawText) => ipcRenderer.invoke('ai:import-skills', rawText),
   },
   onDouyinEvent: (listener) => {
     const handler = (_event, payload) => listener(payload)

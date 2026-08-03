@@ -19,7 +19,7 @@
 当前 Windows 安装包请在 GitHub Releases 中下载：
 
 ```text
-xusheng_setup_v0.3.1.exe
+xusheng_setup_v0.4.0.exe
 ```
 
 下载并双击安装后启动续声，先登录抖音，再进入“模型设置”添加一个 OpenAI 兼容接口。配置完成后可以同步联系人、生成手动回复，或开启 AI 自动回复和续火花任务。

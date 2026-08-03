@@ -12,6 +12,20 @@ let ai
 let isQuitting = false
 let ownsBytedanceProtocol = false
 
+// 防止未捕获异常导致应用直接退出：记录到日志并继续运行。
+process.on('uncaughtException', (error) => {
+  try {
+    const entry = { id: Date.now(), at: new Date().toISOString(), type: 'crash', message: '未捕获异常', detail: { error: String(error?.stack || error?.message || error) } }
+    storage?.addLog?.(entry)
+  } catch {}
+})
+process.on('unhandledRejection', (reason) => {
+  try {
+    const entry = { id: Date.now(), at: new Date().toISOString(), type: 'crash', message: '未处理的 Promise 拒绝', detail: { error: String(reason?.stack || reason?.message || reason) } }
+    storage?.addLog?.(entry)
+  } catch {}
+})
+
 const BYTEDANCE_PROTOCOL = 'bytedance'
 const assetPath = (name) => path.join(__dirname, '..', 'dist', name)
 const isBytedanceUrl = (value) => typeof value === 'string' && /^bytedance:/i.test(value)
@@ -146,15 +160,26 @@ ipcMain.handle('automation:update', (_event, config) => {
   douyin?.startWorker()
   return { ok: true, state: next }
 })
-ipcMain.handle('ai:save-provider', (_event, provider) => { try { return ai.saveProvider(provider) } catch (error) { return { ok: false, error: error.message } } })
-ipcMain.handle('ai:delete-provider', (_event, index) => { try { return ai.deleteProvider(index) } catch (error) { return { ok: false, error: error.message } } })
-ipcMain.handle('ai:set-primary-provider', (_event, index) => { try { return ai.setPrimaryProvider(index) } catch (error) { return { ok: false, error: error.message } } })
-ipcMain.handle('ai:test-provider', async (_event, index) => {
-  try {
-    return await ai.test(index)
-  } catch (error) { return { ok: false, message: error.message } }
-})
-ipcMain.handle('ai:draft', async (_event, payload) => { try { return await ai.draft(payload) } catch (error) { return { ok: false, error: error.message } } })
+
+// AI 服务 IPC:统一捕获异常;除 ai:test-provider 返回 { ok: false, message } 外,
+// 其余均返回 { ok: false, error }
+function registerAiHandlers() {
+  const guarded = (handler, errorKey = 'error') => async (_event, payload) => {
+    try {
+      return await handler(payload)
+    } catch (error) {
+      return { ok: false, [errorKey]: error.message }
+    }
+  }
+  ipcMain.handle('ai:save-provider', guarded((provider) => ai.saveProvider(provider)))
+  ipcMain.handle('ai:delete-provider', guarded((index) => ai.deleteProvider(index)))
+  ipcMain.handle('ai:set-primary-provider', guarded((index) => ai.setPrimaryProvider(index)))
+  ipcMain.handle('ai:test-provider', guarded((index) => ai.test(index), 'message'))
+  ipcMain.handle('ai:draft', guarded((payload) => ai.draft(payload)))
+  ipcMain.handle('ai:get-skills', guarded(() => ({ ok: true, skills: storage.get().aiSkills || [] })))
+  ipcMain.handle('ai:save-skills', guarded((skills) => ai.saveSkills(skills)))
+  ipcMain.handle('ai:import-skills', guarded((rawText) => ai.importSkills(rawText)))
+}
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return
@@ -165,6 +190,7 @@ app.whenReady().then(() => {
   storage = new JsonStorage(app.getPath('userData'))
   applySystemSettings(storage.get().settings)
   ai = new AiService(storage)
+  registerAiHandlers()
   douyin = new DouyinService({
     storage,
     ai,

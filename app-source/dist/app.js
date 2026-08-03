@@ -5,13 +5,13 @@ const defaults = {
   contacts: [],
   providers: [],
   logs: [],
-  appearance: { theme: 'light', fontSize: 'medium', accentColor: '#2f7fd8', backgroundColor: '#eef2f5', motion: 'standard', defaultTone: '' },
+  appearance: { theme: 'light', fontSize: 'medium', accentColor: '#e95d48', defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
     desktopNotifications: true, soundNotifications: false, notifyOnSuccess: true, notifyOnFailure: true,
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard',
-    saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false,
+    saveLogs: true, logRetention: '30', showAiModelLabel: true,
   },
 }
 
@@ -21,6 +21,7 @@ const state = {
   data: structuredClone(defaults),
   selected: null,
   notice: '',
+  quietRender: false,
   providerEditing: null,
   sparkEditing: null,
   activity: { tone: 'idle', title: '就绪', detail: '等待操作' },
@@ -161,6 +162,24 @@ function notify(message) {
   }, 2800)
 }
 
+let eventRenderTimer = null
+function isFormControlActive() {
+  const tag = String(document.activeElement?.tagName || '').toUpperCase()
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+function requestEventRender() {
+  if (eventRenderTimer) return
+  eventRenderTimer = setTimeout(() => {
+    eventRenderTimer = null
+    if (isFormControlActive()) {
+      requestEventRender()
+      return
+    }
+    render({ quiet: true })
+  }, isFormControlActive() ? 800 : 0)
+}
+
 function activeProvider() {
   return state.data.providers?.[0] || null
 }
@@ -203,11 +222,6 @@ async function load() {
     const saved = await D.automation.getState()
     state.data = { ...structuredClone(defaults), ...saved }
     state.data.automation = { ...defaults.automation, ...(saved.automation || {}) }
-    state.data.appearance = { ...defaults.appearance, ...(saved.appearance || {}) }
-    if (state.data.appearance.accentColor === '#e95d48') state.data.appearance.accentColor = defaults.appearance.accentColor
-    if (state.data.appearance.backgroundColor === '#cdf2ff') {
-      state.data.appearance.backgroundColor = state.data.appearance.theme === 'dark' ? '#172338' : defaults.appearance.backgroundColor
-    }
     const status = await D.douyin?.getStatus()
     state.data.connected = Boolean(status?.connected)
   } catch {
@@ -218,19 +232,12 @@ async function load() {
 }
 
 const appearanceThemes = [['light','浅色','#f6f7f9'],['dark','暗色','#0d1117'],['warm','暖色','#fdf9f3'],['forest','森系','#f4faf6']]
-const appearanceAccents = ['#2f7fd8','#16a187','#e95d48','#8b5cf6','#e07b39','#db2777']
-const appearanceBackgrounds = ['#eef2f5','#e2edf7','#e7f1ec','#fff3df','#f1ebfa','#f8eaef','#f7f8fa','#e8f3f5']
-const appearanceMotions = [['quiet','极简','尽量减少界面动效'],['standard','标准','轻量切换和反馈'],['expressive','轻快','更明显的状态响应']]
+const appearanceAccents = ['#e95d48','#3f6fd8','#2d8a5e','#8b5cf6','#e07b39','#db2777']
 
 function applyAppearance() {
-  const ap = { ...defaults.appearance, ...(state.data.appearance || {}) }
-  const root = document.documentElement
-  const safeHex = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || '') ? value : fallback
-  root.setAttribute('data-theme', ap.theme || defaults.appearance.theme)
-  root.setAttribute('data-font-size', ['small', 'medium', 'large'].includes(ap.fontSize) ? ap.fontSize : defaults.appearance.fontSize)
-  root.setAttribute('data-motion', ['quiet', 'standard', 'expressive'].includes(ap.motion) ? ap.motion : defaults.appearance.motion)
-  root.style.setProperty('--accent', ap.accentColor || defaults.appearance.accentColor)
-  root.style.setProperty('--pcl4-user-bg', safeHex(ap.backgroundColor, defaults.appearance.backgroundColor))
+  const ap = state.data.appearance || {}
+  document.documentElement.setAttribute('data-theme', ap.theme || 'light')
+  if (ap.accentColor) document.documentElement.style.setProperty('--accent', ap.accentColor)
 }
 
 function douyinIcon(kind = 'note') {
@@ -261,20 +268,36 @@ function settingsView() {
       <label class="setting-row"><span><strong>发送前确认</strong><small>手动发送消息前显示确认提示</small></span><input type="checkbox" data-setting="confirmBeforeSend" ${checked('confirmBeforeSend')} /></label>
       <label class="setting-row"><span><strong>向对方显示 AI 模型</strong><small>AI 回复前加上当前模型名称；关闭后只发送自然正文</small></span><input type="checkbox" data-setting="showAiModelLabel" ${checked('showAiModelLabel')} /></label>
     </div></section>
-    <section class="panel settings-section"><div class="panel-head"><div><h2>自动化</h2><p>自动回复可直接在联系人页控制栏操作，这里管理辅助行为</p></div></div><div class="settings-list">
-      <label class="setting-row"><span><strong>只生成建议回复</strong><small>像豆包一样只给出回复建议，不写入输入框也不发送</small></span><input type="checkbox" data-setting="aiReplyDraftOnly" ${checked('aiReplyDraftOnly')} /></label>
+    <section class="panel settings-section"><div class="panel-head"><div><h2>自动化</h2><p>控制自动回复、联系人学习、同步频率和免打扰时段</p></div></div><div class="settings-list">
+      <label class="setting-row"><span><strong>AI 自动回复</strong><small>全局开启后，联系人页仍可单独禁用某个人的 AI 回复</small></span><input type="checkbox" data-automation-setting="autoReply" ${automationChecked('autoReply')} /></label>
+      <label class="setting-row"><span><strong>临时暂停自动回复</strong><small>暂停期间不会消耗对方新消息，恢复后仍可处理</small></span><input type="checkbox" data-automation-setting="paused" ${automationChecked('paused')} /></label>
+      <label class="setting-field"><span><strong>每日发送上限</strong><small>限制自动回复、续火花和视频分享的当日总发送量</small></span><input class="setting-number" type="number" min="1" max="500" step="1" data-automation-setting="dailyLimit" value="${Number(a.dailyLimit ?? 30)}" /></label>
       <label class="setting-row"><span><strong>自动学习联系人</strong><small>生成回复前读取近期对话，改善语气匹配</small></span><input type="checkbox" data-setting="autoLearnContacts" ${checked('autoLearnContacts')} /></label>
       <label class="setting-field"><span><strong>联系人刷新频率</strong><small>后台检查新消息的间隔</small></span><select data-setting="refreshInterval"><option value="5" ${s.refreshInterval==='5'?'selected':''}>5 秒</option><option value="15" ${s.refreshInterval==='15'?'selected':''}>15 秒</option><option value="30" ${s.refreshInterval==='30'?'selected':''}>30 秒</option><option value="60" ${s.refreshInterval==='60'?'selected':''}>1 分钟</option><option value="300" ${s.refreshInterval==='300'?'selected':''}>5 分钟</option></select></label>
       <label class="setting-row"><span><strong>打开视频识别</strong><small>自动回复遇到视频、图片或分享卡片时读取可确认的媒体内容</small></span><input type="checkbox" data-setting="videoRecognitionEnabled" ${checked('videoRecognitionEnabled')} /></label>
-      <label class="setting-field"><span><strong>视频识别强度</strong><small>新增公开页模式：只读视频文案和评论，不读取封面、画面或音频</small></span><select data-setting="videoRecognitionStrength"><option value="light" ${s.videoRecognitionStrength==='light'?'selected':''}>轻量</option><option value="standard" ${s.videoRecognitionStrength==='standard'?'selected':''}>标准</option><option value="deep" ${s.videoRecognitionStrength==='deep'?'selected':''}>增强</option><option value="comments20" ${s.videoRecognitionStrength==='comments20'?'selected':''}>文案+评论20条</option><option value="comments30" ${s.videoRecognitionStrength==='comments30'?'selected':''}>文案+评论30条</option></select></label>
+      <label class="setting-field"><span><strong>视频识别强度</strong><small>新增公开页模式：只读视频文案和评论，不读取封面、画面或音频</small></span><select data-setting="videoRecognitionStrength"><option value="light" ${s.videoRecognitionStrength==='light'?'selected':''}>轻量</option><option value="standard" ${s.videoRecognitionStrength==='standard'?'selected':''}>标准</option><option value="deep" ${s.videoRecognitionStrength==='deep'?'selected':''}>增强</option><option value="comments20" ${s.videoRecognitionStrength==='comments20'?'selected':''}>文案 + 评论20条</option><option value="comments30" ${s.videoRecognitionStrength==='comments30'?'selected':''}>文案 + 评论30条</option></select></label>
       <label class="setting-row"><span><strong>低置信度保守回复</strong><small>只有封面或截图时允许生成克制回复；关闭后直接跳过</small></span><input type="checkbox" data-setting="videoLowConfidenceReply" ${checked('videoLowConfidenceReply')} /></label>
       <label class="setting-row"><span><strong>先理解再回复</strong><small>先让视觉模型整理画面要点，再生成最终私信</small></span><input type="checkbox" data-setting="videoAnalysisFirst" ${checked('videoAnalysisFirst')} /></label>
-      <label class="setting-row"><span><strong>多候选择优回复</strong><small>生成2条不同风格的候选，评分选最自然的一条再发送</small></span><input type="checkbox" data-setting="multiCandidateReply" ${checked('multiCandidateReply')} data-feature="multi-candidate" /></label>
-      <div class="setting-field"><span><strong>视频识别回复</strong><small>查看自动识别视频、图片和分享卡片的说明</small></span><button class="btn" data-video-reply-info>查看详情</button></div>
+      <div class="setting-field"><span><strong>视频识别回复</strong><small>查看自动识别视频、图片和分享卡片的说明</small></span><button class="btn" data-video-reply-info>了解</button></div>
       <label class="setting-row"><span><strong>免打扰时段</strong><small>该时段内不自动回复和发送续火花</small></span><input type="checkbox" data-setting="quietHours" ${checked('quietHours')} /></label>
       <div class="cols settings-times"><label>开始时间<input type="time" data-setting="quietStart" value="${esc(s.quietStart)}" /></label><label>结束时间<input type="time" data-setting="quietEnd" value="${esc(s.quietEnd)}" /></label></div>
       <label class="setting-field setting-textarea"><span><strong>完全跳过联系人</strong><small>这些联系人不会收到自动回复、续火花或自动视频分享；每行一个昵称</small></span><textarea data-automation-list="blacklist" rows="3" placeholder="联系人昵称">${esc(automationNames('blacklist'))}</textarea></label>
     </div></section>
+    <section class="panel settings-section"><div class="panel-head"><div><h2>AI Skills</h2><p>自定义提示词模块，按场景注入 AI 回复；支持导入导出</p></div></div>
+      <div class="settings-list">
+        <div class="ai-skills-toolbar"><button class="btn" data-skill-import>导入 JSON</button><button class="btn" data-skill-export>导出全部</button><button class="btn primary" data-skill-add>添加 Skill</button></div>
+        <div id="ai-skills-list" class="ai-skills-list"></div>
+        <details class="ai-skills-box" id="ai-skills-import-box"><summary>粘贴 JSON 导入</summary>
+          <textarea id="ai-skills-import-text" rows="4" placeholder='[{"name":"语言判断","target":"chat","instruction":"先判断对方语气再回复"}]'></textarea>
+          <div class="settings-actions"><button class="btn primary" data-skill-import-confirm>确认导入</button><span class="muted">同名 Skill 会覆盖更新；enabled 默认开启</span></div>
+        </details>
+        <details class="ai-skills-box" id="ai-skills-form"><summary>手动添加 Skill</summary>
+          <div class="cols"><label>名称<input id="skill-name" placeholder="如：语言判断" maxlength="50" /></label><label>适用场景<select id="skill-target"><option value="chat">聊天回复</option><option value="video">视频/评论</option><option value="share">视频分享语</option><option value="all">全部场景</option></select></label></div>
+          <label class="setting-textarea">指令内容<textarea id="skill-instruction" rows="4" placeholder="给 AI 的指令，例如：先判断对方这句话的真实语气再回应，反讽就顺着接住" maxlength="2000"></textarea></label>
+          <div class="settings-actions"><button class="btn primary" data-skill-add-confirm>添加</button><span class="muted">指令会追加到对应场景的 AI 提示词末尾</span></div>
+        </details>
+      </div>
+    </section>
     <section class="panel settings-section"><div class="panel-head"><div><h2>通知</h2><p>选择哪些事件需要提醒你</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>桌面通知</strong><small>任务执行和连接状态变化时显示系统通知</small></span><input type="checkbox" data-setting="desktopNotifications" ${checked('desktopNotifications')} /></label>
       <label class="setting-row"><span><strong>提示音</strong><small>收到通知时播放轻提示音</small></span><input type="checkbox" data-setting="soundNotifications" ${checked('soundNotifications')} /></label>
@@ -284,7 +307,6 @@ function settingsView() {
     <section class="panel settings-section appearance-settings"><div class="panel-head"><div><h2>外观与语气</h2><p>统一管理界面显示和默认回复风格</p></div></div>
       <div class="settings-subsection"><strong>主题</strong><div class="theme-grid">${appearanceThemes.map(([id, label, bg]) => `<button class="theme-card ${ap.theme===id?'active':''}" data-theme-set="${id}"><span class="swatch" style="background:${bg}"></span><span>${label}</span></button>`).join('')}</div></div>
       <div class="settings-subsection"><strong>字体大小</strong><div class="font-size-row"><button class="font-size-btn ${ap.fontSize==='small'?'active':''}" data-font-set="small"><b>Aa</b><span class="demo">小</span></button><button class="font-size-btn ${ap.fontSize==='medium'?'active':''}" data-font-set="medium"><b>Aa</b><span class="demo">中</span></button><button class="font-size-btn ${ap.fontSize==='large'?'active':''}" data-font-set="large"><b>Aa</b><span class="demo">大</span></button></div></div>
-      <div class="settings-subsection"><strong>动画效果</strong><div class="motion-row">${appearanceMotions.map(([id, label, desc]) => `<button class="motion-btn ${ap.motion===id?'active':''}" data-motion-set="${id}"><b>${label}</b><span>${desc}</span></button>`).join('')}</div></div>
       <div class="settings-subsection"><strong>强调色</strong><div class="theme-color-row">${appearanceAccents.map(c => `<button class="theme-color-dot ${ap.accentColor===c?'active':''}" data-accent-set="${c}" style="background:${c};color:${c}" aria-label="选择强调色 ${c}"></button>`).join('')}</div></div>
       <div class="settings-subsection tone-setting"><label>默认 AI 语气<input id="default-tone" list="tone-presets" value="${esc(ap.defaultTone || '')}" placeholder="自动跟随语境" autocomplete="off" /></label><button class="btn primary" data-save-default-tone>保存</button></div>
     </section>
@@ -346,14 +368,86 @@ function bindSettings() {
     alert([
       '视频识别回复说明',
       '',
-      '自动回复遇到视频、图片或分享卡片时，会先识别最新一条对方消息；标准和增强强度会读取画面、音频与公开视频页评论。',
+      '自动回复遇到视频、图片或分享卡片时，会按所选强度读取可确认的信息；公开页模式只读取视频标题、文案和评论，不抓封面、画面或音频。',
       '',
-      '轻量：抓封面和开头帧，速度最快；标准：画面 + 音频 + 评论；增强：高清多帧 + 深度理解。',
-      '',
-      '文案+评论20条 / 30条：只打开公开视频页读取标题、作者、文案和评论，不读取视频封面、内容画面或音频；适合只想根据评论区氛围回复的场景。',
-      '',
-      '新增"多候选择优回复"：对视频消息先生成2条不同风格的回复，经过评分（具体性、自然度、长度、语气）选出最自然的一条再发送。'
+      '轻量：只抓画面，速度最快；标准：画面 + 音频 + 少量评论；增强：画面 + 音频 + 更多评论；文案 + 评论20条/30条：只读公开视频页文案和评论。如果公开视频页、音频或评论不可用，会自动退回可确认的信息，避免编造内容。'
     ].join('\n'))
+  })
+  bindAiSkills()
+}
+
+const SKILL_TARGET_LABELS = { chat: '聊天', video: '视频/评论', share: '分享语', all: '全部' }
+
+function renderAiSkills() {
+  const box = document.getElementById('ai-skills-list')
+  if (!box) return
+  const skills = state.data.aiSkills || []
+  if (!skills.length) {
+    box.innerHTML = '<div class="muted">还没有 Skill。可导入 JSON，或点击「添加 Skill」写一条自定义指令。</div>'
+    return
+  }
+  box.innerHTML = skills.map((skill, index) => `
+    <div class="ai-skill-item">
+      <label class="ai-skill-toggle" title="启用/停用"><input type="checkbox" data-skill-toggle="${index}" ${skill.enabled === false ? '' : 'checked'} /></label>
+      <div class="ai-skill-main">
+        <div class="ai-skill-head"><strong>${esc(skill.name)}</strong><span class="ai-skill-tag">${SKILL_TARGET_LABELS[skill.target] || '全部'}</span></div>
+        <div class="ai-skill-desc">${esc(skill.instruction)}</div>
+      </div>
+      <button class="btn danger btn-sm" data-skill-delete="${index}">删除</button>
+    </div>`).join('')
+}
+
+function bindAiSkills() {
+  renderAiSkills()
+  document.querySelector('[data-skill-import]')?.addEventListener('click', () => { const box = document.getElementById('ai-skills-import-box'); if (box) box.open = !box.open })
+  document.querySelector('[data-skill-add]')?.addEventListener('click', () => { const form = document.getElementById('ai-skills-form'); if (form) form.open = !form.open })
+  document.querySelector('[data-skill-import-confirm]')?.addEventListener('click', async () => {
+    const text = document.getElementById('ai-skills-import-text')?.value || ''
+    if (!text.trim()) return notify('请先粘贴要导入的 JSON')
+    const result = await D.ai.importSkills(text)
+    if (!result?.ok) return notify(result?.error || '导入失败')
+    state.data.aiSkills = result.skills
+    renderAiSkills()
+    document.getElementById('ai-skills-import-text').value = ''
+    notify(`成功导入 ${result.imported} 个 Skill`)
+  })
+  document.querySelector('[data-skill-export]')?.addEventListener('click', () => {
+    const text = JSON.stringify(state.data.aiSkills || [], null, 2)
+    navigator.clipboard?.writeText(text)
+    notify('全部 Skill 的 JSON 已复制到剪贴板')
+  })
+  document.querySelector('[data-skill-add-confirm]')?.addEventListener('click', async () => {
+    const name = (document.getElementById('skill-name')?.value || '').trim()
+    const instruction = (document.getElementById('skill-instruction')?.value || '').trim()
+    const target = document.getElementById('skill-target')?.value || 'all'
+    if (!name) return notify('请填写 Skill 名称')
+    if (!instruction) return notify('请填写指令内容')
+    const skills = [...(state.data.aiSkills || []), { name, target, instruction, enabled: true }]
+    const result = await D.ai.saveSkills(skills)
+    if (!result?.ok) return notify(result?.error || '保存失败')
+    state.data.aiSkills = result.skills
+    renderAiSkills()
+    document.getElementById('skill-name').value = ''
+    document.getElementById('skill-instruction').value = ''
+    notify('Skill 已添加')
+  })
+  document.getElementById('ai-skills-list')?.addEventListener('change', async (event) => {
+    const toggle = event.target.closest('[data-skill-toggle]')
+    if (!toggle) return
+    const index = Number(toggle.dataset.skillToggle)
+    const skills = [...(state.data.aiSkills || [])]
+    skills[index] = { ...skills[index], enabled: toggle.checked }
+    const result = await D.ai.saveSkills(skills)
+    if (result?.ok) { state.data.aiSkills = result.skills; notify(toggle.checked ? 'Skill 已启用' : 'Skill 已停用') }
+    else renderAiSkills()
+  })
+  document.getElementById('ai-skills-list')?.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-skill-delete]')
+    if (!button) return
+    const index = Number(button.dataset.skillDelete)
+    const skills = (state.data.aiSkills || []).filter((_, i) => i !== index)
+    const result = await D.ai.saveSkills(skills)
+    if (result?.ok) { state.data.aiSkills = result.skills; renderAiSkills(); notify('Skill 已删除') }
   })
 }
 
@@ -365,56 +459,22 @@ function bindAppearance() {
     dl.innerHTML = '<option value="自动跟随语境"><option value="随意口语"><option value="温暖亲切"><option value="简短精炼"><option value="幽默活泼"><option value="温柔体贴"><option value="认真正式"><option value="撒娇可爱"><option value="高冷简洁"><option value="热情开朗"><option value="沉着冷静"><option value="毒舌吐槽"><option value="文艺诗意"><option value="憨厚老实"><option value="霸道直接"><option value="二次元风格"><option value="学术严谨"><option value="长辈语气"><option value="恭恭敬敬"><option value="职场正式"><option value="兄弟义气"><option value="暧昧撩人"><option value="卖萌装傻"><option value="官方客服"><option value="颓废丧系"><option value="阳光开朗大男孩"><option value="盐系冷淡"><option value="甜系软妹"><option value="知性优雅"><option value="直球坦率"><option value="腹黑机智">'
     document.body.appendChild(dl)
   }
-  const toneSetting = document.querySelector('.appearance-settings .tone-setting')
-  if (toneSetting && !document.querySelector('[data-background-custom]')) {
-    const ap = { ...defaults.appearance, ...(state.data.appearance || {}) }
-    const currentBg = /^#[0-9a-f]{6}$/i.test(ap.backgroundColor || '') ? ap.backgroundColor : defaults.appearance.backgroundColor
-    const section = document.createElement('div')
-    section.className = 'settings-subsection background-setting'
-    section.innerHTML = '<strong>背景色</strong><div class="theme-color-row">' + appearanceBackgrounds.map((color) => '<button class="theme-color-dot ' + (currentBg === color ? 'active' : '') + '" data-background-set="' + color + '" style="background:' + color + ';color:' + color + '" aria-label="选择背景色 ' + color + '"></button>').join('') + '<label class="custom-color-field">自定义<input type="color" data-background-custom value="' + esc(currentBg) + '" /></label></div>'
-    toneSetting.before(section)
-  }
   document.querySelectorAll('[data-theme-set]').forEach(el => { el.onclick = async () => {
     const theme = el.dataset.themeSet
-    const current = state.data.appearance.backgroundColor || defaults.appearance.backgroundColor
-    const backgroundColor = theme === 'dark' && current === defaults.appearance.backgroundColor
-      ? '#172338'
-      : (state.data.appearance.theme === 'dark' && current === '#172338' ? defaults.appearance.backgroundColor : current)
-    state.data.appearance = { ...state.data.appearance, theme, backgroundColor }
+    state.data.appearance = { ...state.data.appearance, theme }
     await save({ appearance: state.data.appearance }, '主题已更新')
     applyAppearance()
   }})
   document.querySelectorAll('[data-font-set]').forEach(el => { el.onclick = async () => {
     const fontSize = el.dataset.fontSet
     state.data.appearance = { ...state.data.appearance, fontSize }
-    applyAppearance()
     await save({ appearance: state.data.appearance }, '字体大小已调整')
-  }})
-  document.querySelectorAll('[data-motion-set]').forEach(el => { el.onclick = async () => {
-    const motion = el.dataset.motionSet
-    state.data.appearance = { ...state.data.appearance, motion }
-    applyAppearance()
-    await save({ appearance: state.data.appearance }, '动画效果已更新')
   }})
   document.querySelectorAll('[data-accent-set]').forEach(el => { el.onclick = async () => {
     const accentColor = el.dataset.accentSet
     state.data.appearance = { ...state.data.appearance, accentColor }
-    applyAppearance()
+    document.documentElement.style.setProperty('--accent', accentColor)
     await save({ appearance: state.data.appearance }, '强调色已更新')
-  }})
-  document.querySelectorAll('[data-background-set]').forEach(el => { el.onclick = async () => {
-    const backgroundColor = el.dataset.backgroundSet
-    state.data.appearance = { ...state.data.appearance, backgroundColor }
-    applyAppearance()
-    await save({ appearance: state.data.appearance }, '背景色已更新')
-    render()
-  }})
-  document.querySelectorAll('[data-background-custom]').forEach(el => { el.onchange = async () => {
-    const backgroundColor = el.value
-    state.data.appearance = { ...state.data.appearance, backgroundColor }
-    applyAppearance()
-    await save({ appearance: state.data.appearance }, '自定义背景色已更新')
-    render()
   }})
   const saveToneBtn = document.querySelector('[data-save-default-tone]')
   if (saveToneBtn) saveToneBtn.onclick = async () => {
@@ -448,7 +508,7 @@ function nav() {
 }
 
 function shell(content) {
-  return `<div class="app">
+  return `<div class="app${state.quietRender ? ' quiet-render' : ''}">
     <aside class="side">
       <div class="brand">${douyinIcon('note')}<span>续声</span></div>
       <nav class="nav">${nav()}</nav>
@@ -457,7 +517,7 @@ function shell(content) {
         <div class="side-note">本机运行 · 即时监听新消息</div>
       </div>
     </aside>
-    <main class="main"><div class="main-content ${state.pageMotion ? 'pcl-page-enter' : ''}">${content}</div>${renderActivityBar()}</main>
+    <main class="main"><div class="main-content">${content}</div>${renderActivityBar()}</main>
     ${state.notice ? `<div class="notice">${esc(state.notice)}</div>` : ''}
   </div>`
 }
@@ -589,21 +649,6 @@ function contactsView() {
   )
 }
 
-function refreshSelectedContact() {
-  const contacts = state.data.contacts || []
-  const disabled = new Set(state.data.automation.aiDisabledContacts || [])
-  const selected = contacts.find((contact) => contact.name === state.selected) || contacts[0]
-  if (selected) state.selected = selected.name
-  const detailPanel = document.querySelector('.detail-panel')
-  if (!detailPanel) return render()
-  detailPanel.innerHTML = selected ? contactProfile(selected, !disabled.has(selected.name)) : '<div class="empty">请先同步联系人</div>'
-  document.querySelectorAll('.contact-row').forEach((row) => {
-    const button = row.querySelector('[data-select]')
-    row.classList.toggle('selected', button?.dataset.select === state.selected)
-  })
-  bindContacts()
-}
-
 function sparksView() {
   const tasks = state.data.automation.sparks || []
   const contacts = state.data.contacts || []
@@ -688,12 +733,7 @@ function auditView() {
 }
 
 function bindCommon() {
-  document.querySelectorAll('[data-nav]').forEach((button) => { button.onclick = () => {
-    if (state.section === button.dataset.nav) return
-    state.pageMotion = 'route'
-    state.section = button.dataset.nav
-    render()
-  } })
+  document.querySelectorAll('[data-nav]').forEach((button) => { button.onclick = () => { state.section = button.dataset.nav; render() } })
   document.querySelectorAll('[data-login]').forEach((button) => { button.onclick = async () => {
     button.disabled = true
     try { const result = await D.douyin.openLogin(); notify(result?.ok ? '已打开抖音登录窗口' : (result?.error || '登录失败')) }
@@ -712,7 +752,7 @@ function bindCommon() {
 }
 
 function bindContacts() {
-  document.querySelectorAll('[data-select]').forEach((button) => { button.onclick = () => { state.selected = button.dataset.select; refreshSelectedContact() } })
+  document.querySelectorAll('[data-select]').forEach((button) => { button.onclick = () => { state.selected = button.dataset.select; render() } })
   document.querySelectorAll('[data-contact-tab]').forEach((button) => { button.onclick = () => { state.contactTab = button.dataset.contactTab; render() } })
   const inquiryButton = document.querySelector('[data-start-inquiry]')
   if (inquiryButton) inquiryButton.onclick = async () => {
@@ -993,25 +1033,38 @@ function bindStrategies() {
   } })
 }
 
-function render() {
+function render(options = {}) {
+  state.quietRender = Boolean(options.quiet)
   if (state.section === 'appearance') state.section = 'settings'
   const views = { contacts: contactsView, sparks: sparksView, strategies: strategiesView, providers: providersView, settings: settingsView, audit: auditView }
   document.getElementById('app').innerHTML = (views[state.section] || contactsView)()
-  const hadPageMotion = Boolean(state.pageMotion)
-  state.pageMotion = ''
   bindCommon()
   if (state.section === 'contacts') bindContacts()
   if (state.section === 'sparks') bindSparks()
   if (state.section === 'strategies') bindStrategies()
   if (state.section === 'providers') bindProviders()
   if (state.section === 'settings') bindSettings()
-  if (hadPageMotion) setTimeout(() => document.querySelector('.main-content')?.classList.remove('pcl-page-enter'), 240)
 }
 
 D.onDouyinEvent?.(({ type, payload }) => {
-  if (type === 'contacts') state.data.contacts = payload?.contacts || []
-  if (type === 'inquiries') state.data.automation = { ...state.data.automation, inquiries: payload?.inquiries || [] }
-  if (type === 'log') state.data.logs = [payload, ...(state.data.logs || [])].slice(0, 200)
+  let shouldRender = false
+  if (type === 'contacts') {
+    state.data.contacts = payload?.contacts || []
+    shouldRender = state.section === 'contacts'
+  }
+  if (type === 'inquiries') {
+    state.data.automation = { ...state.data.automation, inquiries: payload?.inquiries || [] }
+    shouldRender = shouldRender || state.section === 'contacts'
+  }
+  if (type === 'log') {
+    state.data.logs = [payload, ...(state.data.logs || [])].slice(0, 200)
+    shouldRender = shouldRender || state.section === 'audit'
+  }
+  if (type === 'status') {
+    state.data.connected = Boolean(payload?.connected)
+    shouldRender = true
+  }
+  if (shouldRender) requestEventRender()
 })
 
 load()

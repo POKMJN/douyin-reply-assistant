@@ -5,6 +5,7 @@ const defaults = {
   automation: { autoReply: false, paused: false, rules: [], sparks: [], inquiries: [], dailyLimit: 30, blacklist: [], aiDisabledContacts: [] },
   contacts: [],
   providers: [],
+  aiSkills: [],
   profiles: [],
   logs: [],
   sendHistory: [],
