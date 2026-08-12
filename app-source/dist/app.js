@@ -275,6 +275,7 @@ function settingsView() {
       <label class="setting-row"><span><strong>提示音</strong><small>收到通知时播放轻提示音</small></span><input type="checkbox" data-setting="soundNotifications" ${checked('soundNotifications')} /></label>
       <label class="setting-row"><span><strong>成功时提醒</strong><small>自动回复或续火花发送成功后提醒</small></span><input type="checkbox" data-setting="notifyOnSuccess" ${checked('notifyOnSuccess')} /></label>
       <label class="setting-row"><span><strong>失败时提醒</strong><small>登录失效、发送失败或模型错误时提醒</small></span><input type="checkbox" data-setting="notifyOnFailure" ${checked('notifyOnFailure')} /></label>
+      <div class="setting-row"><span><strong>在线更新</strong><small>检查 GitHub Releases 是否有新版本</small></span><span class="settings-actions"><button class="btn" data-check-update>检查更新</button></span></div>
     </div></section>
     <section class="panel settings-section"><div class="panel-head"><div><h2>自动化</h2><p>控制自动回复、联系人学习、同步频率和免打扰时段</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>AI 自动回复</strong><small>全局开启后，联系人页仍可单独禁用某个人的 AI 回复</small></span><input type="checkbox" data-automation-setting="autoReply" ${automationChecked('autoReply')} /></label>
@@ -365,6 +366,27 @@ function bindSettings() {
     link.click()
     URL.revokeObjectURL(link.href)
     notify('配置文件已导出')
+  })
+  document.querySelector('[data-check-update]')?.addEventListener('click', async (event) => {
+    const btn = event.currentTarget
+    btn.disabled = true
+    btn.textContent = '检查中…'
+    try {
+      const result = await desktopApp.checkUpdate()
+      if (!result?.ok) throw new Error(result?.error || '检查更新失败')
+      if (result.hasUpdate) {
+        notify(`发现新版本 ${result.latestVersion}`)
+        if (confirm(`发现新版本 ${result.latestVersion}\n\n是否打开下载页面？`)) desktopApp.openExternal(result.releaseUrl)
+      } else {
+        const info = await desktopApp.getInfo()
+        notify(`当前 v${info.version} 已是最新版本`)
+      }
+    } catch (error) {
+      notify(error.message || '检查更新失败，请稍后重试')
+    } finally {
+      btn.disabled = false
+      btn.textContent = '检查更新'
+    }
   })
   document.querySelector('[data-video-reply-info]')?.addEventListener('click', () => {
     alert([

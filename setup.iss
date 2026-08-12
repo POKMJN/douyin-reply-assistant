@@ -1,5 +1,5 @@
 #define MyAppName "抖音回复助手"
-#define MyAppVersion "0.5.0"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "抖音回复助手"
 #define MyAppExeName "抖音回复助手.exe"
 #ifndef MyAppAsarSource

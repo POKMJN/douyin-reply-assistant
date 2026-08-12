@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('desktopApp', {
   getInfo: () => ipcRenderer.invoke('app:info'),
+  checkUpdate: () => ipcRenderer.invoke('app:check-update'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
   douyin: {
     openLogin: () => ipcRenderer.invoke('douyin:open-login'),

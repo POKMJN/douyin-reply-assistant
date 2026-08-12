@@ -3,6 +3,7 @@ const path = require('node:path')
 const { JsonStorage } = require('./storage.cjs')
 const { DouyinService } = require('./douyin-service.cjs')
 const { AiService } = require('./ai-service.cjs')
+const { checkUpdate } = require('./update-service.cjs')
 
 let mainWindow
 let tray
@@ -134,6 +135,15 @@ ipcMain.handle('app:info', () => ({
   version: app.getVersion(),
   platform: process.platform,
 }))
+
+// 在线检查更新：查询 GitHub Releases 最新版本，返回 { ok, hasUpdate, latestVersion, releaseUrl, assetUrl, ... }
+ipcMain.handle('app:check-update', async () => {
+  try {
+    return { ok: true, ...(await checkUpdate(app.getVersion())) }
+  } catch (error) {
+    return { ok: false, error: error.message }
+  }
+})
 
 ipcMain.handle('app:open-external', (_event, url) => {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) return shell.openExternal(url)
