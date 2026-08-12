@@ -6,10 +6,13 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { spawn } = require('node:child_process')
 const { BrowserWindow, session } = require('electron')
+const { analyzeLanguageStyle } = require('./ai-service.cjs')
 
 const CHAT_URL = 'https://www.douyin.com/chat?isPopup=1'
 const PARTITION = 'persist:douyin-account'
 const AUTOMATION_POLL_MS = 1000
+// 联系人资料里的回复频率选项 → 两次发送的最小间隔秒数（instant 不限）
+const REPLY_FREQUENCY_SECONDS = { instant: 0, '30s': 30, '60s': 60, '300s': 300, '3600s': 3600 }
 const SPARK_RETRY_MS = 5 * 60 * 1000
 const VIDEO_SHARE_HARD_DAILY_LIMIT = 10
 const VIDEO_SHARE_DEFAULT_DAILY_LIMIT = 3
@@ -945,6 +948,7 @@ class DouyinService {
     this.lastLimitNotice = new Map()
     this.lastSkipNotice = new Map()
     this.blockedContacts = new Set()
+    this.aiBackoff = new Map()
     this._capturedVideoUrl = null
     this._videoDetailIds = new Set()
     this._detailListenerAttached = false
@@ -1513,7 +1517,16 @@ class DouyinService {
       ...contact,
     }))
     if (this.storage?.update && (mergedContacts.length || !savedContacts.length)) {
-      this.storage.update({ contacts: mergedContacts })
+      // 仅当联系人列表实际发生变化时才写盘，避免每轮轮询都触发全量保存
+      const changed = mergedContacts.length !== savedContacts.length
+        || mergedContacts.some((contact, index) => (
+          contact.name !== savedContacts[index]?.name
+          || contact.preview !== savedContacts[index]?.preview
+          || contact.messageKey !== savedContacts[index]?.messageKey
+          || contact.unread !== savedContacts[index]?.unread
+          || contact.fire !== savedContacts[index]?.fire
+        ))
+      if (changed) this.storage.update({ contacts: mergedContacts })
     }
     this.emitEvent('contacts', { contacts: mergedContacts })
     return { ok: true, contacts: mergedContacts }
@@ -2236,15 +2249,26 @@ class DouyinService {
       : { messages, videoInsights: Array.isArray(previous.videoInsights) ? previous.videoInsights : [], updatedAt: new Date().toISOString() }
   }
 
-  recordConversationMessage(name, role, text, fallbackContact = {}) {
+  recordConversationMessage(name, role, text, fallbackContact = {}, options = {}) {
     const value = String(text || '').replace(/\s+/g, ' ').trim()
     if (!name || !value || !this.storage?.update) return fallbackContact
     const state = this.storage.get()
     const contacts = [...(state.contacts || [])]
     const index = contacts.findIndex((contact) => contact.name === name)
     const current = index >= 0 ? contacts[index] : { ...fallbackContact, id: fallbackContact.id || name, name }
+    const human = options.human === true
+    // 对话历史保留全部消息（含 AI 生成的），仅用于提供聊天语境
     const messages = mergeMessageHistory(current.learning?.messages, [{ role, text: value }])
+    // 风格统计只吸收真人消息：对方的发言、以及本人手动发送/配置的回复；
+    // AI 自动生成或自动任务发送的消息不进风格数据，防止 AI 把自己的话当成"本人的说话习惯"越学越像自己。
+    const stylePrev = Array.isArray(current.learning?.styleMessages)
+      ? current.learning.styleMessages
+      : Array.isArray(current.learning?.messages) ? current.learning.messages : []
+    const styleMessages = mergeMessageHistory(stylePrev, human ? [{ role, text: value }] : [])
     const learning = this.analyzeConversation(messages, current.learning)
+    learning.styleMessages = styleMessages
+    learning.contactStyle = analyzeLanguageStyle(styleMessages, 'contact')
+    learning.ownerStyle = analyzeLanguageStyle(styleMessages, 'me')
     const updated = { ...current, learning }
     if (index >= 0) contacts[index] = updated
     else contacts.push(updated)
@@ -2401,6 +2425,7 @@ class DouyinService {
 
   async sendTask(name, task) {
     const effectiveTask = resolveSparkTask(task)
+    if (effectiveTask?.kind === 'aiSpark') return this.sendAiSparkTask(name, effectiveTask)
     if (isVideoShareTask(effectiveTask)) return this.sendVideoShareTask(name, effectiveTask)
     if (effectiveTask?.kind === 'emoji') return this.sendEmoji(name, effectiveTask.emojiName || '\u65e9\u4e0a\u597d')
     if (effectiveTask?.kind === 'combo') {
@@ -2409,6 +2434,34 @@ class DouyinService {
       return { ok: true, kind: 'combo', emojiName: emoji.emojiName, message: effectiveTask?.message || '' }
     }
     return this.sendMessage(name, effectiveTask?.message || '', { source: 'spark_text', allowedDrafts: sparkMessageOptions(effectiveTask) })
+  }
+
+  // AI 自动续火花：从行为池（该联系人近期聊天记录，按角色区分）生成一条当天自然的续火花消息并发送。
+  // AI 生成失败时回退到任务自带文案，保证续火花任务不会因此中断。
+  async sendAiSparkTask(name, task) {
+    if (!name) throw new Error('联系人名称不能为空')
+    this.assertCanSend(name)
+    const state = this.storage.get()
+    const contact = (state.contacts || []).find((item) => item.name === name)
+    let text = ''
+    let aiMeta = {}
+    if (this.ai?.draftSparkMessage) {
+      try {
+        const draft = await this.ai.draftSparkMessage({ contact, task })
+        if (draft?.ok && draft.text) {
+          text = String(draft.text).trim()
+          aiMeta = { source: 'ai_spark', ai: true, model: draft.model || '', provider: draft.provider || '', aiLabel: draft.aiLabel || 'AI' }
+        }
+      } catch (error) {
+        this.log('ai_spark_fallback', `${name} 的 AI 续火花文案生成失败，已回退默认文案`, { name, error: error.message })
+      }
+    }
+    if (!text) {
+      text = String(task?.message || '').trim() || '今天也来续个火花呀～'
+      aiMeta = { source: 'spark_text' }
+    }
+    await this.sendMessage(name, text, aiMeta)
+    return { ok: true, kind: 'aiSpark', message: text }
   }
 
   async startInquiry({ name, question }) {
@@ -2693,7 +2746,7 @@ class DouyinService {
     const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
     this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(target, 'videoShare')
-    this.recordConversationMessage(target, 'me', sentText)
+    this.recordConversationMessage(target, 'me', sentText, {}, { human: false })
     this.log('message_sent', `Shared a video card with ${target}`, { name: target, url, source: metadata.source || 'video_share', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
     return { ok: true, kind: 'videoShare', card: true }
     } finally {
@@ -2897,6 +2950,14 @@ class DouyinService {
   async sendMessage(name, text, metadata = {}) {
     if (!name || !String(text).trim()) throw new Error('联系人和消息内容不能为空')
     this.assertCanSend(name)
+    // 回复频率节流：按联系人资料里配置的最小发送间隔限制（instant 不限）
+    const freqContact = (this.storage.get().contacts || []).find((item) => item.name === name)
+    const freqSeconds = REPLY_FREQUENCY_SECONDS[freqContact?.profile?.frequency] || 0
+    if (freqSeconds > 0) {
+      const lastAt = this.lastReplyTime.get(name) || 0
+      const waitMs = freqSeconds * 1000 - (Date.now() - lastAt)
+      if (waitMs > 0) throw new Error(`该联系人设置了回复间隔，请 ${Math.ceil(waitMs / 1000)} 秒后再发送`)
+    }
     let value = String(text).trim()
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
@@ -3000,7 +3061,7 @@ class DouyinService {
     const pairs = [...this.lastSent].map(([n, t]) => ({ name: n, text: t, at: Date.now() }))
     this.storage.update({ lastSentPairs: pairs })
     this.recordSuccessfulSend(name, 'text')
-    this.recordConversationMessage(name, 'me', normalized)
+    this.recordConversationMessage(name, 'me', normalized, {}, { human: !metadata.ai })
     this.log('message_sent', `Sent a message to ${name}`, { name, text: normalized, source: metadata.source || 'manual', ai: Boolean(metadata.ai), model: metadata.model || '', provider: metadata.provider || '', aiLabel: metadata.aiLabel || '' })
     return { ok: true }
   }
@@ -3088,6 +3149,12 @@ class DouyinService {
     const status = await this.getStatus()
     if (!status.connected) return
     if (!this.window || this.window.isDestroyed()) this.ensureWindow(false)
+    // 看门狗：页面 executeJavaScript 卡死会让本轮无限挂起，导致 polling 永远为 true、自动回复静默停止。
+    // 整轮超过 5 分钟强制中止本轮，下轮轮询重新开始。
+    const watchdog = setTimeout(() => {
+      this.log('worker_watchdog', '自动回复本轮执行超时，已强制跳过本轮', { detail: '页面可能卡死' })
+      this.polling = false
+    }, 5 * 60 * 1000)
     this.polling = true
     try {
       const { contacts } = await this.syncContacts()
@@ -3095,6 +3162,7 @@ class DouyinService {
       const blacklist = new Set((config.blacklist || []).map((name) => String(name).trim()).filter(Boolean))
       const aiDisabledContacts = new Set((config.aiDisabledContacts || []).map((name) => String(name).trim()).filter(Boolean))
       const canSend = (name) => !blacklist.has(name) && this.getSendAllowance(name).ok
+      const factCandidates = []
       for (const contact of contacts) {
         let currentMessageKey = contactMessageKey(contact)
         const previous = this.lastSeen.get(contact.name)
@@ -3177,7 +3245,11 @@ class DouyinService {
           continue
         }
         this.recordVideoShareEngagement(contact.name, currentMessageKey)
-        const learnedContact = this.recordConversationMessage(contact.name, 'contact', contact.preview, contact)
+        const learnedContact = this.recordConversationMessage(contact.name, 'contact', contact.preview, contact, { human: true })
+        // 长期记忆（功能D）：对方有新消息时收集候选，今天尚未提炼的联系人才入列（每天最多一次）
+        if (settings.longTermMemory !== false && this.ai?.mineFacts && learnedContact?.learning?.factsUpdatedAt !== today) {
+          factCandidates.push(learnedContact)
+        }
         if (pendingInquiry) {
           try {
             const summary = await this.ai.summarizeInquiry({ contact: learnedContact, question: pendingInquiry.question, asked: pendingInquiry.asked, answer: contact.preview })
@@ -3197,11 +3269,21 @@ class DouyinService {
             continue
           }
         }
-        const rule = (config.rules || []).find((item) => item.enabled !== false && (item.keywords || []).some((keyword) => contact.preview.includes(keyword)))
-        let replyText = rule?.replyText || ''
+        let replyText = ''
         let aiAttempted = false
         let aiDraft = null
-        if (!replyText && this.ai?.hasProvider?.()) {
+        if (this.ai?.hasProvider?.()) {
+          // AI 失败退避：同联系人连续失败时按指数拉长重试间隔（30s→2min→8min→30min），
+          // 避免模型持续报错时每轮轮询都重复调用 API。规则回复不经过 AI，不受退避影响。
+          const backoff = this.aiBackoff.get(contact.name)
+          if (backoff && Date.now() < backoff.retryAt) {
+            if (!this.lastSkipNotice.has(`ai_backoff:${contact.name}`)) {
+              this.lastSkipNotice.set(`ai_backoff:${contact.name}`, Date.now())
+              this.log('ai_backoff', `${contact.name} 的 AI 调用暂缓（${Math.ceil((backoff.retryAt - Date.now()) / 1000)} 秒后重试）`, { name: contact.name, backoffMs: backoff.retryAt - Date.now() })
+            }
+            this.lastSeen.set(contact.name, currentMessageKey)
+            continue
+          }
           aiAttempted = true
           try {
             // 进入聊天面板抓取完整消息以增强上下文理解
@@ -3284,6 +3366,11 @@ class DouyinService {
             }
           } catch (error) {
             this.log('ai_error', `为 ${contact.name} 调用 AI 失败`, { name: contact.name, error: error.message })
+            // 指数退避：连续失败按 30s → 2min → 8min → 30min 递增
+            const prev = this.aiBackoff.get(contact.name)?.step || 0
+            const step = Math.min(prev + 1, 4)
+            const delay = [30000, 120000, 480000, 1800000][step - 1]
+            this.aiBackoff.set(contact.name, { step, retryAt: Date.now() + delay })
             if (previous === undefined) this.lastSeen.delete(contact.name)
             else this.lastSeen.set(contact.name, previous)
             continue
@@ -3296,8 +3383,21 @@ class DouyinService {
               this.log('ai_reply_rejected', `${contact.name} 的媒体回复已拦截`, { name: contact.name, mediaKind: mediaKindForReply, preview: contact.preview, text: replyText, reason: 'unavailable_media_reply' })
               continue
             }
+            // 草稿待确认模式：AI 生成的回复不直接发送，进入草稿列表等待人工确认/修改后再发
+            if (aiAttempted && settings.aiReplyDraftOnly === true) {
+              const drafts = [...(this.storage.get().pendingDrafts || [])]
+              drafts.unshift({ id: Date.now(), at: new Date().toISOString(), name: contact.name, text: replyText, incoming: String(contact.preview || ''), model: aiDraft?.model || '', provider: aiDraft?.provider || '', status: 'pending' })
+              const capped = drafts.slice(0, 50)
+              this.storage.update({ pendingDrafts: capped })
+              this.emitEvent('drafts', { drafts: capped })
+              this.log('ai_draft_pending', `已为 ${contact.name} 生成 AI 草稿待确认`, { name: contact.name, text: replyText })
+              this.lastSeen.set(contact.name, currentMessageKey)
+              continue
+            }
             const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || this.storage.get().providers?.[0]?.model || '', provider: aiDraft?.provider || this.storage.get().providers?.[0]?.name || '', aiLabel: aiDraft?.aiLabel || `AI · ${aiDraft?.model || this.storage.get().providers?.[0]?.model || '当前模型'}` } : { source: 'rule' }
             await this.sendMessage(contact.name, replyText, aiMeta)
+            // AI 成功生成并发送后，清除该联系人的失败退避
+            this.aiBackoff.delete(contact.name)
             this.lastSeen.set(contact.name, currentMessageKey)
           } catch (error) {
             if (previous === undefined) this.lastSeen.delete(contact.name)
@@ -3360,7 +3460,25 @@ class DouyinService {
         }
       }
       await this.processContactVideoShareTasks([...(this.storage.get().contacts || [])], now, blacklist, canSend)
+      // 长期记忆提炼（功能D）：本轮最多提炼 3 位联系人的长期记忆，避免拖慢轮询
+      for (const candidate of factCandidates.slice(0, 3)) {
+        if (!candidate?.name) continue
+        try {
+          const learned = await this.ai.mineFacts({ name: candidate.name, messages: candidate.learning?.messages, existing: candidate.learning?.facts })
+          if (learned?.ok && Array.isArray(learned.facts)) {
+            const latestState = this.storage.get()
+            const latestContacts = [...(latestState.contacts || [])]
+            const idx = latestContacts.findIndex((item) => item.name === candidate.name)
+            if (idx >= 0) {
+              latestContacts[idx] = { ...latestContacts[idx], learning: { ...(latestContacts[idx].learning || {}), facts: learned.facts, factsUpdatedAt: today } }
+              this.storage.update({ contacts: latestContacts })
+              this.emitEvent('contacts', { contacts: latestContacts })
+            }
+          }
+        } catch (_) { /* 提炼失败不影响主流程 */ }
+      }
     } finally {
+      clearTimeout(watchdog)
       this.polling = false
     }
   }

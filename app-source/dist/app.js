@@ -11,7 +11,7 @@ const defaults = {
     desktopNotifications: true, soundNotifications: false, notifyOnSuccess: true, notifyOnFailure: true,
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard',
-    saveLogs: true, logRetention: '30', showAiModelLabel: true, failoverEnabled: true,
+    saveLogs: true, logRetention: '30', showAiModelLabel: true, failoverEnabled: true, blur: false,
   },
 }
 
@@ -24,6 +24,8 @@ const state = {
   quietRender: false,
   providerEditing: null,
   sparkEditing: null,
+  compactSettings: false,
+  logFilter: { q: '', name: '', type: '' },
   activity: { tone: 'idle', title: '就绪', detail: '等待操作' },
 }
 
@@ -240,13 +242,15 @@ function applyAppearance() {
   const theme = ap.theme || 'auto'
   document.documentElement.setAttribute('data-theme', theme === 'warm' || theme === 'forest' ? 'light' : theme)
   if (ap.accentColor) document.documentElement.style.setProperty('--accent', ap.accentColor)
+  // 高斯模糊强度：默认 20px，开启后提到 42px（由 .blur-on 类驱动，CSS 在 enhancements.css）
+  document.documentElement.style.setProperty('--blur-strong', state.data.settings?.blur === true ? '42px' : '20px')
 }
 
 function douyinIcon(kind = 'note') {
   const paths = {
     contacts: '<path d="M5 18c1.6-3 4-4.5 7-4.5s5.4 1.5 7 4.5"/><circle cx="12" cy="8" r="3.2"/><path d="M4 21h16"/>',
     sparks: '<path d="M13 2 6 13h5l-1 9 8-13h-5l1-7Z"/><path d="M4 18h4m8 0h4"/>',
-    strategies: '<path d="M5 6h12a2 2 0 0 1 0 4H9a2 2 0 0 0 0 4h10"/><path d="m16 11 3 3-3 3"/>',
+    drafts: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9 12h6"/><path d="M12 9v6"/>',
     providers: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M7 10h10M7 14h6"/><path d="M9 19v3m6-3v3"/>',
     settings: '<rect x="5" y="6" width="14" height="12" rx="2"/><path d="M8 10h2m3 0h3M8 14h8"/><circle cx="19" cy="5" r="2"/>',
     audit: '<path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/><path d="m15 16 2 2 4-5"/>',
@@ -264,7 +268,7 @@ function settingsView() {
   const checked = (key) => s[key] ? 'checked' : ''
   const automationChecked = (key) => a[key] ? 'checked' : ''
   const automationNames = (key) => (a[key] || []).join('\n')
-  return shell(header('设置', '集中管理启动、自动化、通知和本地数据偏好。', '<button class="btn" data-export-settings>导出配置</button><button class="btn danger" data-reset-settings>恢复默认</button>') + `<div class="settings-grid">
+  return shell(header('设置', '集中管理启动、自动化、通知和本地数据偏好。', '<button class="btn" data-compact-settings>' + (state.compactSettings ? '恢复宽松布局' : '紧凑布局') + '</button><button class="btn" data-export-settings>导出配置</button><button class="btn danger" data-reset-settings>恢复默认</button>') + `<div class="settings-grid${state.compactSettings ? ' compact-settings' : ''}">
     <section class="panel settings-section"><div class="panel-head"><div><h2>应用与通知</h2><p>启动方式、发送交互与系统提醒</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>开机自动启动</strong><small>登录 Windows 后自动打开抖音回复助手</small></span><input type="checkbox" data-setting="launchOnStartup" ${checked('launchOnStartup')} /></label>
       <label class="setting-row"><span><strong>启动时最小化</strong><small>启动后直接进入托盘，不打扰当前工作</small></span><input type="checkbox" data-setting="startMinimized" ${checked('startMinimized')} /></label>
@@ -279,6 +283,8 @@ function settingsView() {
     </div></section>
     <section class="panel settings-section"><div class="panel-head"><div><h2>自动化</h2><p>控制自动回复、联系人学习、同步频率和免打扰时段</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>AI 自动回复</strong><small>全局开启后，联系人页仍可单独禁用某个人的 AI 回复</small></span><input type="checkbox" data-automation-setting="autoReply" ${automationChecked('autoReply')} /></label>
+      <label class="setting-row"><span><strong>AI 回复先拟草稿</strong><small>AI 生成的回复不直接发送，进入「AI 草稿」列表由你确认或修改后再手动发送</small></span><input type="checkbox" data-setting="aiReplyDraftOnly" ${checked('aiReplyDraftOnly')} /></label>
+      <label class="setting-row"><span><strong>长期记忆</strong><small>自动从对话中提炼对方的重要事实（工作、家人、兴趣等），回复与续火花时自然引用</small></span><input type="checkbox" data-setting="longTermMemory" ${checked('longTermMemory')} /></label>
       <label class="setting-row"><span><strong>临时暂停自动回复</strong><small>暂停期间不会消耗对方新消息，恢复后仍可处理</small></span><input type="checkbox" data-automation-setting="paused" ${automationChecked('paused')} /></label>
       <label class="setting-field"><span><strong>每日发送上限</strong><small>限制自动回复、续火花和视频分享的当日总发送量</small></span><input class="setting-number" type="number" min="1" max="500" step="1" data-automation-setting="dailyLimit" value="${Number(a.dailyLimit ?? 30)}" /></label>
       <label class="setting-row"><span><strong>自动学习联系人</strong><small>生成回复前读取近期对话，改善语气匹配</small></span><input type="checkbox" data-setting="autoLearnContacts" ${checked('autoLearnContacts')} /></label>
@@ -312,6 +318,7 @@ function settingsView() {
       <div class="settings-subsection"><strong>字体大小</strong><div class="font-size-row"><button class="font-size-btn ${ap.fontSize==='small'?'active':''}" data-font-set="small"><b>Aa</b><span class="demo">小</span></button><button class="font-size-btn ${ap.fontSize==='medium'?'active':''}" data-font-set="medium"><b>Aa</b><span class="demo">中</span></button><button class="font-size-btn ${ap.fontSize==='large'?'active':''}" data-font-set="large"><b>Aa</b><span class="demo">大</span></button></div></div>
       <div class="settings-subsection"><strong>强调色</strong><div class="theme-color-row">${appearanceAccents.map(c => `<button class="theme-color-dot ${ap.accentColor===c?'active':''}" data-accent-set="${c}" style="background:${c};color:${c}" aria-label="选择强调色 ${c}"></button>`).join('')}</div></div>
       <div class="settings-subsection tone-setting"><label>默认 AI 语气<input id="default-tone" list="tone-presets" value="${esc(ap.defaultTone || '')}" placeholder="自动跟随语境" autocomplete="off" /></label><button class="btn primary" data-save-default-tone>保存</button></div>
+      <div class="settings-subsection blur-setting"><label class="setting-row"><span><strong>界面高斯模糊</strong><small>对侧栏与面板背景应用更强的高斯模糊效果，视觉更柔和</small></span><input type="checkbox" data-setting="blur" ${checked('blur')} /></label></div>
     </section>
     <section class="panel settings-section"><div class="panel-head"><div><h2>隐私与数据</h2><p>控制运行记录在本机的保存方式</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>保存运行记录</strong><small>保留 AI 调用、发送结果和失败原因</small></span><input type="checkbox" data-setting="saveLogs" ${checked('saveLogs')} /></label>
@@ -323,6 +330,10 @@ function settingsView() {
 
 function bindSettings() {
   bindAppearance()
+  document.querySelector('[data-compact-settings]')?.addEventListener('click', () => {
+    state.compactSettings = !state.compactSettings
+    render()
+  })
   document.querySelectorAll('[data-automation-setting]').forEach((control) => {
     control.onchange = async () => {
       const key = control.dataset.automationSetting
@@ -348,6 +359,7 @@ function bindSettings() {
       const nextSettings = { ...defaults.settings, ...(state.data.settings || {}), [key]: value }
       if (key === 'videoRecognitionEnabled') nextSettings.videoReplyEnabled = value
       await save({ settings: nextSettings }, '设置已保存')
+      if (key === 'blur') applyAppearance()
     }
   })
   document.querySelector('[data-clear-logs]')?.addEventListener('click', async () => {
@@ -523,7 +535,7 @@ function nav() {
   const items = [
     ['contacts', '联系人', 'contacts'],
     ['sparks', '续火花', 'sparks'],
-    ['strategies', '回复策略', 'strategies'],
+    ['drafts', 'AI 草稿', 'drafts'],
     ['providers', '模型设置', 'providers'],
     ['audit', '运行记录', 'audit'],
     ['persona', '行为池', 'persona'],
@@ -533,7 +545,7 @@ function nav() {
 }
 
 function shell(content) {
-  return `<div class="app${state.quietRender ? ' quiet-render' : ''}">
+  return `<div class="app${state.quietRender ? ' quiet-render' : ''}${state.data.settings?.blur === true ? ' blur-on' : ''}">
     <aside class="side">
       <div class="brand"><img class="brand-cat" src="./app-icon.png" alt="" /><span>抖音回复助手</span></div>
       <nav class="nav">${nav()}</nav>
@@ -661,26 +673,28 @@ function sparksView() {
   const kind = editing?.kind || 'emoji'
   const emojiName = editing?.emojiName || '早上好'
   const enabled = editing?.enabled !== false
-  const messageText = sparkMessageText(editing) || DEFAULT_SPARK_MESSAGES.join('\n')
-  const sparkSummary = (task) => task.kind === 'emoji'
-    ? `表情包：${esc(task.emojiName || '早上好')}`
-    : task.kind === 'combo'
-      ? `${sparkMessageOptions(task).length > 1 ? `${sparkMessageOptions(task).length} 条随机文案 · 今日：${esc(dailySparkMessage(task))}` : esc(dailySparkMessage(task) || '文字')} + 表情包：${esc(task.emojiName || '早上好')}`
-      : sparkMessageOptions(task).length > 1
-        ? `${sparkMessageOptions(task).length} 条随机文案 · 今日：${esc(dailySparkMessage(task))}`
-        : esc(dailySparkMessage(task) || '')
+  const messageText = kind === 'aiSpark' ? (sparkMessageText(editing) || '') : (sparkMessageText(editing) || DEFAULT_SPARK_MESSAGES.join('\n'))
+  const sparkSummary = (task) => task.kind === 'aiSpark'
+    ? `AI 每天根据行为池自动生成${task.message ? ` · 备用文案：${esc(task.message)}` : ''}`
+    : task.kind === 'emoji'
+      ? `表情包：${esc(task.emojiName || '早上好')}`
+      : task.kind === 'combo'
+        ? `${sparkMessageOptions(task).length > 1 ? `${sparkMessageOptions(task).length} 条随机文案 · 今日：${esc(dailySparkMessage(task))}` : esc(dailySparkMessage(task) || '文字')} + 表情包：${esc(task.emojiName || '早上好')}`
+        : sparkMessageOptions(task).length > 1
+          ? `${sparkMessageOptions(task).length} 条随机文案 · 今日：${esc(dailySparkMessage(task))}`
+          : esc(dailySparkMessage(task) || '')
   return shell(header('续火花', '每天到点检查是否已和该联系人发送过消息；未发送才自动补发，失败会重试。') + `<div class="grid">
     <section class="panel span-5"><div class="panel-head"><div><h2>${editing ? '编辑任务' : '新增任务'}</h2><p>文字可一行一条，系统每天自动随机取一条</p></div></div>
       <div class="form">
         <label>联系人<select id="spark-name">${contactNames.length ? contactNames.map((name) => `<option value="${esc(name)}" ${name === selectedName ? 'selected' : ''}>${esc(name)}</option>`).join('') : '<option value="">请先同步联系人</option>'}</select></label>
-        <div class="cols"><label>类型<select id="spark-kind"><option value="emoji" ${kind === 'emoji' ? 'selected' : ''}>表情包</option><option value="text" ${kind === 'text' ? 'selected' : ''}>文字</option><option value="combo" ${kind === 'combo' ? 'selected' : ''}>文字 + 表情包</option></select></label><label>表情包<select id="spark-emoji"><option ${emojiName === '早上好' ? 'selected' : ''}>早上好</option><option ${emojiName === '晚上好' ? 'selected' : ''}>晚上好</option><option ${emojiName === '早点睡' ? 'selected' : ''}>早点睡</option><option ${emojiName === '续火花' ? 'selected' : ''}>续火花</option></select></label></div>
+        <div class="cols"><label>类型<select id="spark-kind"><option value="aiSpark" ${kind === 'aiSpark' ? 'selected' : ''}>AI 智能续火花</option><option value="emoji" ${kind === 'emoji' ? 'selected' : ''}>表情包</option><option value="text" ${kind === 'text' ? 'selected' : ''}>文字</option><option value="combo" ${kind === 'combo' ? 'selected' : ''}>文字 + 表情包</option></select></label><label>表情包<select id="spark-emoji"><option ${emojiName === '早上好' ? 'selected' : ''}>早上好</option><option ${emojiName === '晚上好' ? 'selected' : ''}>晚上好</option><option ${emojiName === '早点睡' ? 'selected' : ''}>早点睡</option><option ${emojiName === '续火花' ? 'selected' : ''}>续火花</option></select></label></div>
         <div class="cols"><label>时间<input id="spark-time" type="time" value="${esc(editing?.time || '20:00')}" /></label><label>状态<select id="spark-enabled"><option value="true" ${enabled ? 'selected' : ''}>启用</option><option value="false" ${enabled ? '' : 'selected'}>停用</option></select></label></div>
-        <label>文字内容<span class="form-hint">每行一条，文字或“文字 + 表情包”任务会按日期随机发送其中一条</span><textarea id="spark-message" placeholder="今天也来续个火花呀～&#10;想你啦，来续个火花&#10;今日份火花打卡">${esc(messageText)}</textarea></label>
+        <label>${kind === 'aiSpark' ? '提示与备用文案' : '文字内容'}<span class="form-hint">${kind === 'aiSpark' ? '可留空：AI 会从行为池（该联系人近期聊天与说话风格）每天自动生成；生成失败时使用此文案' : '每行一条，文字或“文字 + 表情包”任务会按日期随机发送其中一条'}</span><textarea id="spark-message" placeholder="${kind === 'aiSpark' ? '例如：昨天聊的那个话题后来怎么样了？' : '今天也来续个火花呀～&#10;想你啦，来续个火花&#10;今日份火花打卡'}">${esc(messageText)}</textarea></label>
         <div class="form-actions">${editing ? '<button class="btn" data-cancel-spark>取消编辑</button>' : ''}<button class="btn primary" data-save-spark ${contactNames.length ? '' : 'disabled'}>${editing ? '保存修改' : '保存任务'}</button></div>
       </div>
     </section>
     <section class="panel span-7"><div class="panel-head"><div><h2>任务列表</h2><p>${tasks.length} 个任务 · 已开启自动检测补续</p></div></div>
-      ${tasks.length ? `<div class="list">${tasks.map((task, index) => `<div class="row ${editingIndex === index ? 'editing-row' : ''}"><div class="row-main"><strong>${esc(task.name)}</strong><span>每天 ${esc(task.time)} · ${sparkSummary(task)}</span></div>${task.lastRunDate === localDateKey() ? '<span class="tag">今日已完成</span>' : ''}<span class="tag">${task.kind === 'combo' ? '组合' : task.kind === 'emoji' ? '表情包' : '文字'}</span><span class="tag ${task.enabled ? '' : 'off'}">${task.enabled ? '启用' : '停用'}</span><div class="task-actions"><button class="btn ghost" data-edit-spark="${index}">编辑</button><button class="btn ghost" data-run-spark="${index}">立即发送</button><button class="btn ghost" data-toggle-spark="${index}">${task.enabled ? '停用' : '启用'}</button><button class="btn ghost danger" data-delete-spark="${index}">删除</button></div></div>`).join('')}</div>` : '<div class="empty">还没有续火花任务</div>'}
+      ${tasks.length ? `<div class="list">${tasks.map((task, index) => `<div class="row ${editingIndex === index ? 'editing-row' : ''}"><div class="row-main"><strong>${esc(task.name)}</strong><span>每天 ${esc(task.time)} · ${sparkSummary(task)}</span></div>${task.lastRunDate === localDateKey() ? '<span class="tag">今日已完成</span>' : ''}<span class="tag">${task.kind === 'aiSpark' ? 'AI 智能' : task.kind === 'combo' ? '组合' : task.kind === 'emoji' ? '表情包' : '文字'}</span><span class="tag ${task.enabled ? '' : 'off'}">${task.enabled ? '启用' : '停用'}</span><div class="task-actions"><button class="btn ghost" data-edit-spark="${index}">编辑</button><button class="btn ghost" data-run-spark="${index}">立即发送</button><button class="btn ghost" data-toggle-spark="${index}">${task.enabled ? '停用' : '启用'}</button><button class="btn ghost danger" data-delete-spark="${index}">删除</button></div></div>`).join('')}</div>` : '<div class="empty">还没有续火花任务</div>'}
     </section>
   </div>`)
 }
@@ -714,21 +728,6 @@ function providersView() {
   </div>`)
 }
 
-function strategiesView() {
-  const automation = state.data.automation || defaults.automation
-  const rules = automation.rules || []
-  return shell(header('回复策略', '关键词话术优先命中，未命中时再交给 AI 生成。') + `<div class="grid">
-    <section class="panel span-12"><div class="panel-head"><div><h2>关键词话术</h2><p>${rules.length} 条规则，按列表顺序匹配</p></div></div>
-      <div class="form strategy-form">
-        <label>关键词<input id="rule-keywords" placeholder="多个关键词用逗号分隔，例如：在吗，睡了吗" /></label>
-        <label>固定回复<textarea id="rule-reply" placeholder="命中任一关键词后发送的内容"></textarea></label>
-        <div class="form-actions"><button class="btn primary" data-save-rule>添加规则</button></div>
-      </div>
-      ${rules.length ? `<div class="list rule-list">${rules.map((rule, index) => `<div class="row"><div class="row-main"><strong>${esc((rule.keywords || []).join(' / '))}</strong><span>${esc(rule.replyText || '')}</span></div><span class="tag ${rule.enabled === false ? 'off' : ''}">${rule.enabled === false ? '停用' : '启用'}</span><button class="btn ghost" data-toggle-rule="${index}">${rule.enabled === false ? '启用' : '停用'}</button><button class="btn ghost danger" data-delete-rule="${index}">删除</button></div>`).join('')}</div>` : '<div class="empty rule-empty">还没有话术规则，未命中的消息会使用 AI。</div>'}
-    </section>
-  </div>`)
-}
-
 // 日志类型 → [中文处理行为标签, 徽章色(ok/warn/error)]
 const LOG_LABELS = {
   message_sent: ['消息已发送', 'ok'],
@@ -737,6 +736,7 @@ const LOG_LABELS = {
   auto_skip: ['跳过（自己发送）', 'warn'],
   auto_blocked: ['自动回复被阻止', 'warn'],
   ai_error: ['AI 调用失败', 'error'],
+  ai_backoff: ['AI 调用暂缓', 'warn'],
   ai_unavailable: ['AI 暂不可用', 'error'],
   ai_empty: ['AI 无可用回复', 'warn'],
   ai_reply_rejected: ['AI 回复被拒绝', 'warn'],
@@ -760,6 +760,11 @@ const LOG_LABELS = {
   spark_sent: ['续火花已发送', 'ok'],
   spark_fill_skipped: ['续火花跳过', 'warn'],
   spark_fill_failed: ['续火花补发失败', 'error'],
+  ai_spark_draft: ['AI 续火花文案', 'ok'],
+  ai_spark_fallback: ['AI 续火花回退', 'warn'],
+  ai_draft_pending: ['AI 草稿待确认', 'warn'],
+  ai_facts_mined: ['长期记忆已更新', 'ok'],
+  worker_watchdog: ['任务执行超时', 'error'],
   video_captured: ['已捕获视频', 'ok'],
   video_unreadable: ['视频不可读', 'warn'],
   video_low_confidence: ['视频识别低置信', 'warn'],
@@ -789,8 +794,33 @@ function logResult(detail = {}) {
 
 function auditView() {
   const logs = state.data.logs || []
+  const filter = state.logFilter || { q: '', name: '', type: '' }
+  // 收集联系人下拉选项（从日志里实际出现过的联系人 + 现有联系人）
+  const contactOptions = [...new Set([
+    ...logs.map((entry) => entry.detail?.name || '').filter(Boolean),
+    ...(state.data.contacts || []).map((contact) => contact.name),
+  ])].sort((a, b) => a.localeCompare(b, 'zh'))
+  const typeOptions = Object.entries(LOG_LABELS)
+    .filter(([key]) => key !== 'crash' && key !== 'worker_error')
+    .sort((a, b) => a[1][0].localeCompare(b[1][0], 'zh'))
+  const keyword = filter.q.trim().toLowerCase()
+  const filtered = logs.filter((entry) => {
+    if (filter.name && entry.detail?.name !== filter.name) return false
+    if (filter.type && entry.type !== filter.type) return false
+    if (keyword) {
+      const haystack = `${entry.message || ''} ${entry.type || ''} ${entry.detail?.name || ''} ${entry.detail?.error || ''} ${entry.detail?.text || ''} ${entry.detail?.answer || ''} ${entry.detail?.report || ''} ${entry.detail?.preview || ''}`.toLowerCase()
+      if (!haystack.includes(keyword)) return false
+    }
+    return true
+  })
   return shell(header('运行记录', '每条记录在一个框内展示：捕捉到的账号、处理行为与最终结果。', '<button class="btn" data-refresh>刷新</button>') + `<section class="panel">
-    ${logs.length ? `<div class="timeline">${logs.map((entry) => {
+    <div class="log-filter-bar">
+      <input id="log-filter-q" type="search" placeholder="搜索关键词（消息内容、错误信息…）" value="${esc(filter.q)}" />
+      <select id="log-filter-name"><option value="">全部联系人</option>${contactOptions.map((name) => `<option value="${esc(name)}" ${filter.name === name ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select>
+      <select id="log-filter-type"><option value="">全部类型</option>${typeOptions.map(([key, [label]]) => `<option value="${key}" ${filter.type === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>
+      <span class="log-filter-count">${filtered.length} / ${logs.length} 条</span>
+    </div>
+    ${filtered.length ? `<div class="timeline">${filtered.map((entry) => {
       const detail = entry.detail || {}
       const [label, tone] = LOG_LABELS[entry.type] || [entry.message || entry.type, 'warn']
       const account = detail.name ? detail.name : '系统'
@@ -808,8 +838,24 @@ function auditView() {
         </div>
         ${result ? `<div class="log-result"><span class="log-field-label">结果</span><div class="log-result-text ${result.tone}">${esc(result.text)}${source ? `<div class="muted" style="margin-top:4px">${esc(source)}</div>` : ''}</div></div>` : ''}
       </div>`
-    }).join('')}</div>` : '<div class="empty">暂无运行记录</div>'}
+    }).join('')}</div>` : (logs.length ? '<div class="empty">没有符合筛选条件的记录</div>' : '<div class="empty">暂无运行记录</div>')}
   </section>`)
+}
+
+function draftsView() {
+  const drafts = state.data.pendingDrafts || []
+  const pending = drafts.filter((draft) => draft.status === 'pending')
+  const sent = drafts.filter((draft) => draft.status === 'sent' || draft.status === 'discarded')
+  return shell(header('AI 草稿', '开启「AI 回复先拟草稿」后，AI 生成的回复会先到这里由你确认或修改，确认后才会发送。', '<button class="btn" data-draft-clear>清空已处理</button>') + `<section class="panel">
+    <div class="panel-head"><div><h2>待确认（${pending.length}）</h2><p>点击「发送」立即发送；也可编辑内容后发送</p></div></div>
+    ${pending.length ? `<div class="list">${pending.map((draft, index) => `<div class="draft-card" data-draft-id="${draft.id}">
+      <div class="draft-meta"><strong>${esc(draft.name)}</strong><time>${esc(new Date(draft.at).toLocaleString('zh-CN', { hour12: false }))}</time>${draft.model ? `<span class="tag">${esc(draft.model)}</span>` : ''}</div>
+      ${draft.incoming ? `<div class="draft-incoming"><span class="muted">对方：</span>${esc(draft.incoming)}</div>` : ''}
+      <textarea data-draft-text="${index}" rows="2">${esc(draft.text)}</textarea>
+      <div class="form-actions"><button class="btn ghost danger" data-draft-discard="${draft.id}">丢弃</button><button class="btn primary" data-draft-send="${draft.id}">发送</button></div>
+    </div>`).join('')}</div>` : '<div class="empty">暂无待确认的草稿</div>'}
+  </section>
+  ${sent.length ? `<section class="panel"><div class="panel-head"><div><h2>已处理（${sent.length}）</h2><p>已发送或已丢弃的草稿</p></div></div><div class="list">${sent.slice(0, 30).map((draft) => `<div class="draft-card done"><div class="draft-meta"><strong>${esc(draft.name)}</strong><time>${esc(new Date(draft.at).toLocaleString('zh-CN', { hour12: false }))}</time><span class="tag ${draft.status === 'sent' ? '' : 'off'}">${draft.status === 'sent' ? '已发送' : '已丢弃'}</span></div><div class="draft-text">${esc(draft.text)}</div></div>`).join('')}</div></section>` : ''}`)
 }
 
 function personaView() {
@@ -830,6 +876,7 @@ function personaView() {
       const contactStyle = learning.contactStyle || {}
       const ownerStyle = learning.ownerStyle || {}
       const videoInsights = learning.videoInsights || []
+      const facts = learning.facts || []
       const updatedAt = learning.updatedAt ? new Date(learning.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
       return `<div class="persona-card">
         <div class="persona-head">
@@ -841,6 +888,7 @@ function personaView() {
           <div class="persona-style"><span class="persona-style-label">对方风格</span><span class="persona-style-chip ${contactStyle.summary ? '' : 'empty'}">${esc(contactStyle.summary || '尚未提炼')}</span></div>
           <div class="persona-style"><span class="persona-style-label">我的风格</span><span class="persona-style-chip ${ownerStyle.summary ? '' : 'empty'}">${esc(ownerStyle.summary || '尚未提炼')}</span></div>
         </div>
+        ${facts.length ? `<div class="persona-style"><span class="persona-style-label">长期记忆</span><div class="persona-facts">${facts.slice(-10).map((fact) => `<span class="persona-fact">${esc(fact)}</span>`).join('')}</div></div>` : ''}
         ${videoInsights.length ? `<div class="persona-style"><span class="persona-style-label">视频洞察</span><div class="persona-insights">${videoInsights.slice(-6).reverse().map((item) => `<div class="persona-insight"><time>${esc(new Date(item.at).toLocaleDateString('zh-CN'))}</time><span>${esc(item.insight)}</span></div>`).join('')}</div></div>` : ''}
         ${messages.length ? `<details class="persona-details"><summary>查看学习到的对话（${messages.length} 条）</summary><div class="persona-messages">${messages.map((msg) => {
           const isMe = msg.role === 'me'
@@ -887,6 +935,13 @@ function bindCommon() {
     } catch (error) { notify(`同步失败：${error.message}`) }
   } })
   document.querySelectorAll('[data-refresh]').forEach((button) => { button.onclick = load })
+  // 运行记录筛选：关键词/联系人/类型
+  const q = document.getElementById('log-filter-q')
+  if (q) q.oninput = () => { state.logFilter.q = q.value; render({ quiet: true }) }
+  const nameFilter = document.getElementById('log-filter-name')
+  if (nameFilter) nameFilter.onchange = () => { state.logFilter.name = nameFilter.value; render({ quiet: true }) }
+  const typeFilter = document.getElementById('log-filter-type')
+  if (typeFilter) typeFilter.onchange = () => { state.logFilter.type = typeFilter.value; render({ quiet: true }) }
 }
 
 function bindContacts() {
@@ -1097,11 +1152,12 @@ function bindSparks() {
   document.querySelectorAll('[data-run-spark]').forEach((button) => { button.onclick = async () => {
     const task = state.data.automation.sparks[Number(button.dataset.runSpark)]
     const todayMessage = dailySparkMessage(task)
-    const content = task.kind === 'emoji' ? `表情包：${task.emojiName}` : task.kind === 'combo' ? `${todayMessage}\n表情包：${task.emojiName}` : todayMessage
+    const content = task.kind === 'emoji' ? `表情包：${task.emojiName}` : task.kind === 'combo' ? `${todayMessage}\n表情包：${task.emojiName}` : task.kind === 'aiSpark' ? `AI 每天根据行为池自动生成${task.message ? `（备用文案：${task.message}）` : ''}` : todayMessage
     if (state.data.settings?.confirmBeforeSend !== false && !confirm(`立即向“${task.name}”发送：\n\n${content}`)) return
     button.disabled = true
-    setActivity('正在发送续火花', `${task.name} · ${task.kind === 'combo' ? '文字 + 表情包' : task.kind === 'emoji' ? '表情包' : '文字'}`, 'busy')
-    try { await D.douyin.sendTask(task.name, task); setActivity('续火花已发送', `${task.name} · ${content.replace(/\n/g, ' / ')}`, 'ok'); notify('消息已发送') }
+    const kindLabel = task.kind === 'combo' ? '文字 + 表情包' : task.kind === 'emoji' ? '表情包' : task.kind === 'aiSpark' ? 'AI 智能续火花' : '文字'
+    setActivity('正在发送续火花', `${task.name} · ${kindLabel}`, 'busy')
+    try { await D.douyin.sendTask(task.name, task); setActivity('续火花已发送', `${task.name} · ${(task.kind === 'aiSpark' ? 'AI 生成' : content).replace(/\n/g, ' / ')}`, 'ok'); notify('消息已发送') }
     catch (error) { setActivity('续火花发送失败', error.message, 'error'); notify(`发送失败：${error.message}`) }
     finally { button.disabled = false }
   } })
@@ -1155,37 +1211,48 @@ function bindProviders() {
   }
 }
 
-function bindStrategies() {
-  const updateRules = (rules, message) => save({ automation: { ...state.data.automation, rules } }, message)
-  const add = document.querySelector('[data-save-rule]')
-  if (add) add.onclick = async () => {
-    const keywords = document.getElementById('rule-keywords').value.split(/[,，\n]+/).map((value) => value.trim()).filter(Boolean)
-    const replyText = document.getElementById('rule-reply').value.trim()
-    if (!keywords.length || !replyText) return notify('请填写关键词和固定回复')
-    await updateRules([...(state.data.automation.rules || []), { id: Date.now(), keywords, replyText, enabled: true }], '话术规则已添加')
-  }
-  document.querySelectorAll('[data-toggle-rule]').forEach((button) => { button.onclick = async () => {
-    const rules = [...(state.data.automation.rules || [])]
-    const index = Number(button.dataset.toggleRule)
-    rules[index] = { ...rules[index], enabled: rules[index].enabled === false }
-    await updateRules(rules, rules[index].enabled ? '话术规则已启用' : '话术规则已停用')
+function bindDrafts() {
+  document.querySelector('[data-draft-clear]')?.addEventListener('click', async () => {
+    const drafts = (state.data.pendingDrafts || []).filter((draft) => draft.status === 'pending')
+    await save({ pendingDrafts: drafts }, '已清空已处理的草稿')
+  })
+  document.querySelectorAll('[data-draft-send]').forEach((button) => { button.onclick = async () => {
+    const id = Number(button.dataset.draftSend)
+    const card = document.querySelector(`[data-draft-id="${id}"]`)
+    const textarea = card?.querySelector('textarea')
+    const text = (textarea?.value || '').trim()
+    if (!text) return notify('草稿内容为空，无法发送')
+    const draft = (state.data.pendingDrafts || []).find((item) => item.id === id)
+    if (!draft) return notify('草稿不存在')
+    if (state.data.settings?.confirmBeforeSend !== false && !confirm(`确定向“${draft.name}”发送这条回复吗？\n\n${text}`)) return
+    button.disabled = true
+    try {
+      await D.douyin.sendMessage(draft.name, text)
+      const drafts = (state.data.pendingDrafts || []).map((item) => item.id === id ? { ...item, status: 'sent', sentAt: new Date().toISOString() } : item)
+      state.data.pendingDrafts = drafts
+      await save({ pendingDrafts: drafts }, `已向 ${draft.name} 发送`)
+    } catch (error) {
+      notify(`发送失败：${error.message}`)
+      button.disabled = false
+    }
   } })
-  document.querySelectorAll('[data-delete-rule]').forEach((button) => { button.onclick = async () => {
-    const rules = [...(state.data.automation.rules || [])]
-    rules.splice(Number(button.dataset.deleteRule), 1)
-    await updateRules(rules, '话术规则已删除')
+  document.querySelectorAll('[data-draft-discard]').forEach((button) => { button.onclick = async () => {
+    const id = Number(button.dataset.draftDiscard)
+    if (!confirm('确定丢弃这条草稿吗？')) return
+    const drafts = (state.data.pendingDrafts || []).map((item) => item.id === id ? { ...item, status: 'discarded' } : item)
+    await save({ pendingDrafts: drafts }, '草稿已丢弃')
   } })
 }
 
 function render(options = {}) {
   state.quietRender = Boolean(options.quiet)
   if (state.section === 'appearance') state.section = 'settings'
-  const views = { contacts: contactsView, sparks: sparksView, strategies: strategiesView, providers: providersView, settings: settingsView, audit: auditView, persona: personaView }
+  const views = { contacts: contactsView, sparks: sparksView, drafts: draftsView, providers: providersView, settings: settingsView, audit: auditView, persona: personaView }
   document.getElementById('app').innerHTML = (views[state.section] || contactsView)()
   bindCommon()
   if (state.section === 'contacts') bindContacts()
   if (state.section === 'sparks') bindSparks()
-  if (state.section === 'strategies') bindStrategies()
+  if (state.section === 'drafts') bindDrafts()
   if (state.section === 'providers') bindProviders()
   if (state.section === 'settings') bindSettings()
   if (state.section === 'persona') bindPersona()
@@ -1200,6 +1267,10 @@ D.onDouyinEvent?.(({ type, payload }) => {
   if (type === 'inquiries') {
     state.data.automation = { ...state.data.automation, inquiries: payload?.inquiries || [] }
     shouldRender = shouldRender || state.section === 'contacts'
+  }
+  if (type === 'drafts') {
+    state.data.pendingDrafts = payload?.drafts || []
+    shouldRender = shouldRender || state.section === 'drafts'
   }
   if (type === 'log') {
     state.data.logs = [payload, ...(state.data.logs || [])].slice(0, 200)

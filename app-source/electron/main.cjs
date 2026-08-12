@@ -56,8 +56,8 @@ function createWindow() {
   const settings = storage?.get()?.settings || {}
   const appIcon = assetPath('app-icon.png')
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 920,
+    width: 1180,
+    height: 760,
     minWidth: 980,
     minHeight: 680,
     // Win11 Fluent：窗口背景跟随系统明暗（纯色主题，不使用系统 Mica）

@@ -9,6 +9,7 @@ const defaults = {
   profiles: [],
   logs: [],
   sendHistory: [],
+  pendingDrafts: [],
   appearance: { theme: 'auto', fontSize: 'medium', accentColor: '#0067c0', backgroundColor: '#eef2f5', motion: 'standard', blur: false, defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
@@ -16,6 +17,7 @@ const defaults = {
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard', multiCandidateReply: true,
     saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false, failoverEnabled: true,
+    longTermMemory: true,
   },
 }
 
@@ -176,7 +178,8 @@ class JsonStorage {
     const tempPath = `${this.filePath}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-      fs.writeFileSync(tempPath, JSON.stringify(this.state, null, 2), 'utf8')
+      // 紧凑 JSON 写盘：相比格式化输出可减少约 30% 磁盘量，读写更快
+      fs.writeFileSync(tempPath, JSON.stringify(this.state), 'utf8')
       fs.renameSync(tempPath, this.filePath)
     } catch (writeError) {
       try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath) } catch { /* ignore cleanup errors */ }

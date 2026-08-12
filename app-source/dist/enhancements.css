@@ -2743,4 +2743,272 @@ select:focus {
   border-color: transparent;
 }
 
+/* ============================================================
+   高斯模糊开关 + 设置页紧凑布局（2026-08-12 追加七）
+   ============================================================ */
+
+/* 1. 高斯模糊：开启后侧栏与面板背景强度提升（强度由 app.js 设置 --blur-strong） */
+.blur-on .side {
+  backdrop-filter: blur(var(--blur-strong, 42px)) saturate(1.6);
+  -webkit-backdrop-filter: blur(var(--blur-strong, 42px)) saturate(1.6);
+}
+
+.blur-on .panel {
+  backdrop-filter: blur(var(--blur-strong, 42px)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--blur-strong, 42px)) saturate(1.5);
+}
+
+/* 2. 设置页紧凑布局：由设置页右上角「紧凑布局」按钮切换 */
+.compact-settings {
+  gap: 10px;
+}
+
+.compact-settings .settings-section {
+  padding: 10px 12px;
+}
+
+.compact-settings .settings-section .panel-head {
+  margin-bottom: 4px;
+}
+
+.compact-settings .settings-section .panel-head h2 {
+  font-size: 13px;
+}
+
+.compact-settings .settings-section .panel-head p {
+  font-size: 10.5px;
+  margin-top: 2px;
+}
+
+.compact-settings .setting-row,
+.compact-settings .setting-field {
+  padding: 6px 0;
+  gap: 10px;
+}
+
+.compact-settings .setting-row strong,
+.compact-settings .setting-field strong {
+  font-size: 12px;
+}
+
+.compact-settings .setting-row small,
+.compact-settings .setting-field small {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.compact-settings .setting-field select,
+.compact-settings .setting-field .setting-number {
+  width: 116px;
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+
+.compact-settings .setting-textarea textarea {
+  min-height: 44px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+}
+
+.compact-settings .settings-times {
+  padding-top: 6px;
+}
+
+.compact-settings .settings-times input {
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+
+.compact-settings .settings-actions {
+  padding-top: 6px;
+}
+
+.compact-settings .settings-actions .btn {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.compact-settings .settings-subsection {
+  padding: 6px 0;
+  gap: 6px;
+}
+
+.compact-settings .settings-subsection > strong {
+  font-size: 11.5px;
+}
+
+.compact-settings .tone-setting input {
+  padding: 6px 9px;
+  font-size: 11.5px;
+}
+
+.compact-settings .theme-card {
+  padding: 6px 4px;
+  font-size: 11px;
+}
+
+.compact-settings .theme-card .swatch {
+  height: 20px;
+}
+
+.compact-settings .font-size-btn {
+  padding: 6px 4px;
+  font-size: 11px;
+}
+
+.compact-settings .ai-skills-toolbar {
+  padding: 4px 0;
+}
+
+.compact-settings .ai-skill-item {
+  padding: 5px 0;
+  gap: 8px;
+}
+
+.compact-settings .ai-skill-head strong {
+  font-size: 12px;
+}
+
+.compact-settings .ai-skill-desc {
+  font-size: 10px;
+}
+
+.compact-settings .ai-skills-box {
+  padding: 4px 0;
+}
+
+.compact-settings .ai-skills-box summary {
+  font-size: 11px;
+}
+
+.compact-settings .ai-skills-box textarea {
+  min-height: 44px;
+  padding: 5px 8px;
+}
+
+/* ============================================================
+   AI 草稿列表 + 运行记录筛选 + 长期记忆（2026-08-12 追加八）
+   ============================================================ */
+
+/* AI 草稿 */
+.draft-card {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  background: var(--surface-solid);
+}
+
+.draft-card.done {
+  opacity: 0.75;
+  background: transparent;
+}
+
+.draft-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.draft-meta strong {
+  font-size: 13px;
+}
+
+.draft-meta time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.draft-incoming {
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--hover-bg);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.draft-card textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--ink);
+  font-size: 12.5px;
+  resize: vertical;
+  outline: none;
+}
+
+.draft-card textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.draft-card .form-actions {
+  justify-content: flex-end;
+}
+
+.draft-text {
+  font-size: 12.5px;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+/* 运行记录筛选栏 */
+.log-filter-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.log-filter-bar input,
+.log-filter-bar select {
+  border: 1px solid var(--line);
+  background: var(--input-bg);
+  border-radius: 7px;
+  padding: 6px 10px;
+  color: var(--ink);
+  font-size: 12px;
+  outline: none;
+}
+
+.log-filter-bar input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.log-filter-bar input:focus,
+.log-filter-bar select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.log-filter-count {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 长期记忆标签 */
+.persona-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.persona-fact {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+  color: var(--blue);
+  border: 1px solid var(--line);
+}
+
 

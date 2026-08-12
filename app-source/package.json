@@ -1,7 +1,7 @@
 {
   "name": "douyin-reply-assistant",
   "private": true,
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "本地运行的抖音回复助手：联系人管理、AI 自动回复、手动拟回复与续火花任务",
   "author": "抖音回复助手",
   "type": "module",
