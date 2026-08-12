@@ -5,13 +5,13 @@ const defaults = {
   contacts: [],
   providers: [],
   logs: [],
-  appearance: { theme: 'light', fontSize: 'medium', accentColor: '#e95d48', defaultTone: '' },
+  appearance: { theme: 'auto', fontSize: 'medium', accentColor: '#0067c0', defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
     desktopNotifications: true, soundNotifications: false, notifyOnSuccess: true, notifyOnFailure: true,
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard',
-    saveLogs: true, logRetention: '30', showAiModelLabel: true,
+    saveLogs: true, logRetention: '30', showAiModelLabel: true, failoverEnabled: true,
   },
 }
 
@@ -231,12 +231,14 @@ async function load() {
   render()
 }
 
-const appearanceThemes = [['light','浅色','#f6f7f9'],['dark','暗色','#0d1117'],['warm','暖色','#fdf9f3'],['forest','森系','#f4faf6']]
-const appearanceAccents = ['#e95d48','#3f6fd8','#2d8a5e','#8b5cf6','#e07b39','#db2777']
+const appearanceThemes = [['auto','跟随系统','#f3f3f3'],['light','浅色','#f3f3f3'],['dark','暗色','#202020'],['warm','暖色','#fdf9f3'],['forest','森系','#f4faf6']]
+const appearanceAccents = ['#0067c0','#3f6fd8','#2d8a5e','#8b5cf6','#e07b39','#db2777']
 
 function applyAppearance() {
   const ap = state.data.appearance || {}
-  document.documentElement.setAttribute('data-theme', ap.theme || 'light')
+  // auto=跟随系统（prefers-color-scheme）；warm/forest 旧主题归一到 Fluent 浅色
+  const theme = ap.theme || 'auto'
+  document.documentElement.setAttribute('data-theme', theme === 'warm' || theme === 'forest' ? 'light' : theme)
   if (ap.accentColor) document.documentElement.style.setProperty('--accent', ap.accentColor)
 }
 
@@ -248,6 +250,8 @@ function douyinIcon(kind = 'note') {
     providers: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M7 10h10M7 14h6"/><path d="M9 19v3m6-3v3"/>',
     settings: '<rect x="5" y="6" width="14" height="12" rx="2"/><path d="M8 10h2m3 0h3M8 14h8"/><circle cx="19" cy="5" r="2"/>',
     audit: '<path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h3"/><path d="m15 16 2 2 4-5"/>',
+    persona: '<path d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0-1 5.8V17a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3v-3.2A3 3 0 0 0 16 8V7a4 4 0 0 0-4-4Z"/><path d="M9 9h1m4 0h1M9 13h1m4 0h1M10 21v-1m4 1v-1"/>',
+    cat: '<path d="M12 3.5 8 6.8a6.5 6.5 0 0 0-3.5 5.7V16a4 4 0 0 0 4 4h7a4 4 0 0 0 4-4v-3.5A6.5 6.5 0 0 0 16 6.8L12 3.5Z"/><path d="M8.5 6.2 7 2.8M15.5 6.2 17 2.8"/><path d="M10 11h.01M14 11h.01M10 14.2c1.2 1 2.8 1 4 0"/><path d="M5.5 12.8h-2M6.8 15.4l-1.8 1M18.5 12.8h2M17.2 15.4l1.8 1"/>',
     note: '<rect x="4" y="6" width="16" height="12" rx="2"/><path d="M7 11h10"/><path d="M8 18v3m4-3v3m4-3v3"/>',
   }
   return `<span class="douyin-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[kind] || paths.note}</svg></span>`
@@ -261,12 +265,16 @@ function settingsView() {
   const automationChecked = (key) => a[key] ? 'checked' : ''
   const automationNames = (key) => (a[key] || []).join('\n')
   return shell(header('设置', '集中管理启动、自动化、通知和本地数据偏好。', '<button class="btn" data-export-settings>导出配置</button><button class="btn danger" data-reset-settings>恢复默认</button>') + `<div class="settings-grid">
-    <section class="panel settings-section"><div class="panel-head"><div><h2>应用行为</h2><p>决定应用启动和发送时的交互方式</p></div></div><div class="settings-list">
-      <label class="setting-row"><span><strong>开机自动启动</strong><small>登录 Windows 后自动打开续声</small></span><input type="checkbox" data-setting="launchOnStartup" ${checked('launchOnStartup')} /></label>
+    <section class="panel settings-section"><div class="panel-head"><div><h2>应用与通知</h2><p>启动方式、发送交互与系统提醒</p></div></div><div class="settings-list">
+      <label class="setting-row"><span><strong>开机自动启动</strong><small>登录 Windows 后自动打开抖音回复助手</small></span><input type="checkbox" data-setting="launchOnStartup" ${checked('launchOnStartup')} /></label>
       <label class="setting-row"><span><strong>启动时最小化</strong><small>启动后直接进入托盘，不打扰当前工作</small></span><input type="checkbox" data-setting="startMinimized" ${checked('startMinimized')} /></label>
       <label class="setting-row"><span><strong>关闭窗口时最小化到托盘</strong><small>保留后台监听和定时任务</small></span><input type="checkbox" data-setting="minimizeToTray" ${checked('minimizeToTray')} /></label>
       <label class="setting-row"><span><strong>发送前确认</strong><small>手动发送消息前显示确认提示</small></span><input type="checkbox" data-setting="confirmBeforeSend" ${checked('confirmBeforeSend')} /></label>
       <label class="setting-row"><span><strong>向对方显示 AI 模型</strong><small>AI 回复前加上当前模型名称；关闭后只发送自然正文</small></span><input type="checkbox" data-setting="showAiModelLabel" ${checked('showAiModelLabel')} /></label>
+      <label class="setting-row"><span><strong>桌面通知</strong><small>任务执行和连接状态变化时显示系统通知</small></span><input type="checkbox" data-setting="desktopNotifications" ${checked('desktopNotifications')} /></label>
+      <label class="setting-row"><span><strong>提示音</strong><small>收到通知时播放轻提示音</small></span><input type="checkbox" data-setting="soundNotifications" ${checked('soundNotifications')} /></label>
+      <label class="setting-row"><span><strong>成功时提醒</strong><small>自动回复或续火花发送成功后提醒</small></span><input type="checkbox" data-setting="notifyOnSuccess" ${checked('notifyOnSuccess')} /></label>
+      <label class="setting-row"><span><strong>失败时提醒</strong><small>登录失效、发送失败或模型错误时提醒</small></span><input type="checkbox" data-setting="notifyOnFailure" ${checked('notifyOnFailure')} /></label>
     </div></section>
     <section class="panel settings-section"><div class="panel-head"><div><h2>自动化</h2><p>控制自动回复、联系人学习、同步频率和免打扰时段</p></div></div><div class="settings-list">
       <label class="setting-row"><span><strong>AI 自动回复</strong><small>全局开启后，联系人页仍可单独禁用某个人的 AI 回复</small></span><input type="checkbox" data-automation-setting="autoReply" ${automationChecked('autoReply')} /></label>
@@ -298,12 +306,6 @@ function settingsView() {
         </details>
       </div>
     </section>
-    <section class="panel settings-section"><div class="panel-head"><div><h2>通知</h2><p>选择哪些事件需要提醒你</p></div></div><div class="settings-list">
-      <label class="setting-row"><span><strong>桌面通知</strong><small>任务执行和连接状态变化时显示系统通知</small></span><input type="checkbox" data-setting="desktopNotifications" ${checked('desktopNotifications')} /></label>
-      <label class="setting-row"><span><strong>提示音</strong><small>收到通知时播放轻提示音</small></span><input type="checkbox" data-setting="soundNotifications" ${checked('soundNotifications')} /></label>
-      <label class="setting-row"><span><strong>成功时提醒</strong><small>自动回复或续火花发送成功后提醒</small></span><input type="checkbox" data-setting="notifyOnSuccess" ${checked('notifyOnSuccess')} /></label>
-      <label class="setting-row"><span><strong>失败时提醒</strong><small>登录失效、发送失败或模型错误时提醒</small></span><input type="checkbox" data-setting="notifyOnFailure" ${checked('notifyOnFailure')} /></label>
-    </div></section>
     <section class="panel settings-section appearance-settings"><div class="panel-head"><div><h2>外观与语气</h2><p>统一管理界面显示和默认回复风格</p></div></div>
       <div class="settings-subsection"><strong>主题</strong><div class="theme-grid">${appearanceThemes.map(([id, label, bg]) => `<button class="theme-card ${ap.theme===id?'active':''}" data-theme-set="${id}"><span class="swatch" style="background:${bg}"></span><span>${label}</span></button>`).join('')}</div></div>
       <div class="settings-subsection"><strong>字体大小</strong><div class="font-size-row"><button class="font-size-btn ${ap.fontSize==='small'?'active':''}" data-font-set="small"><b>Aa</b><span class="demo">小</span></button><button class="font-size-btn ${ap.fontSize==='medium'?'active':''}" data-font-set="medium"><b>Aa</b><span class="demo">中</span></button><button class="font-size-btn ${ap.fontSize==='large'?'active':''}" data-font-set="large"><b>Aa</b><span class="demo">大</span></button></div></div>
@@ -359,7 +361,7 @@ function bindSettings() {
     const blob = new Blob([JSON.stringify({ settings: state.data.settings || defaults.settings, appearance: state.data.appearance || defaults.appearance }, null, 2)], { type: 'application/json' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `续声设置-${new Date().toISOString().slice(0, 10)}.json`
+    link.download = `抖音回复助手设置-${new Date().toISOString().slice(0, 10)}.json`
     link.click()
     URL.revokeObjectURL(link.href)
     notify('配置文件已导出')
@@ -501,8 +503,9 @@ function nav() {
     ['sparks', '续火花', 'sparks'],
     ['strategies', '回复策略', 'strategies'],
     ['providers', '模型设置', 'providers'],
-    ['settings', '设置', 'settings'],
     ['audit', '运行记录', 'audit'],
+    ['persona', '行为池', 'persona'],
+    ['settings', '设置', 'settings'],
   ]
   return items.map(([id, label, icon]) => `<button class="${state.section === id ? 'active' : ''}" data-nav="${id}">${douyinIcon(icon)}<span>${label}</span></button>`).join('')
 }
@@ -510,7 +513,7 @@ function nav() {
 function shell(content) {
   return `<div class="app${state.quietRender ? ' quiet-render' : ''}">
     <aside class="side">
-      <div class="brand">${douyinIcon('note')}<span>续声</span></div>
+      <div class="brand"><img class="brand-cat" src="./app-icon.png" alt="" /><span>抖音回复助手</span></div>
       <nav class="nav">${nav()}</nav>
       <div class="side-foot">
         <div class="status"><i class="dot ${state.data.connected ? 'on' : ''}"></i>${state.data.connected ? '抖音已连接' : '等待扫码登录'}</div>
@@ -544,19 +547,11 @@ function contactList(contacts, selected, disabled) {
 
 function contactProfile(contact, aiEnabled) {
   const profile = contact.profile || {}
-  const videoShare = profile.videoShare || {}
   const learnedCount = Number(contact.learning?.messages?.length || 0)
   const learnedAt = contact.learning?.updatedAt ? new Date(contact.learning.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
-  const videoShareItems = normalizeVideoShareItems(videoShare)
-  const videoShareDiscovery = videoShareDiscoveryText(videoShare)
-  const videoShareCategories = normalizeVideoShareCategories(videoShare.categories)
-  const videoShareNext = videoShare.nextRunAt ? new Date(videoShare.nextRunAt).toLocaleString('zh-CN', { hour12: false }) : ''
-  const videoShareLabel = videoShare.enabled
-    ? `已选 ${videoShareCategories.length} 个类型${videoShareDiscovery ? ` · 补充 ${esc(videoShareDiscovery.split(/[\n,，、;；]+/).filter(Boolean).length)} 条` : ''}${videoShareItems.length ? ` · 备用 ${videoShareItems.length} 个` : ''}${videoShareNext ? ` · 下次 ${esc(videoShareNext)}` : ''}`
-    : '关闭时不会主动发视频'
   return `<div class="contact-detail-head">
       <div><h2>${esc(contact.name)}</h2><p>${learnedCount ? `已学习 ${learnedCount} 条对话 · ${esc(learnedAt)}` : '尚未学习历史对话'}</p></div>
-      <div class="contact-state-stack"><span class="ai-state ${aiEnabled ? 'on' : 'off'}">${aiEnabled ? '允许 AI 自动回复' : '已禁止 AI 自动回复'}</span><span class="ai-state ${videoShare.enabled ? 'on' : 'off'}">${videoShare.enabled ? '随机视频已开' : '随机视频关闭'}</span></div>
+      <div class="contact-state-stack"><span class="ai-state ${aiEnabled ? 'on' : 'off'}">${aiEnabled ? '允许 AI 自动回复' : '已禁止 AI 自动回复'}</span></div>
     </div>
     <div class="tabs">
       <button class="${state.contactTab === 'profile' ? 'active' : ''}" data-contact-tab="profile">联系人设置</button>
@@ -588,21 +583,6 @@ function contactProfile(contact, aiEnabled) {
           <div class="group-head"><strong>边界和注意事项</strong><span>减少不合适的主动发挥</span></div>
           <label>回复禁区<textarea id="p-boundary" placeholder="例如：不主动聊收入、不在深夜发送">${esc(profile.boundary || '')}</textarea></label>
           <label>回复注意事项<textarea id="p-notes" placeholder="例如：别提前男友、每次回复都关心一下身体">${esc(profile.notes || '')}</textarea></label>
-        </section>
-        <section class="profile-group contact-video-share ${videoShare.enabled ? 'enabled' : ''}">
-          <div class="group-head"><strong>主动随机视频</strong><span>${videoShareLabel}</span></div>
-          <label class="setting-row video-share-toggle"><span><strong>自动找视频并分享</strong><small>按时间窗自己搜索合适视频，再发给这个联系人</small></span><input id="p-video-share-enabled" type="checkbox" ${videoShare.enabled ? 'checked' : ''} /></label>
-          <div class="cols">
-            <label>开始时间<input id="p-video-share-start" type="time" value="${esc(videoShare.windowStart || '12:00')}" /></label>
-            <label>结束时间<input id="p-video-share-end" type="time" value="${esc(videoShare.windowEnd || '22:30')}" /></label>
-          </div>
-          <label>每天最多<input id="p-video-share-max" type="number" min="1" max="10" step="1" value="${Math.max(1, Math.min(10, Number(videoShare.maxPerDay || 3)))}" /></label>
-          <div class="video-category-block">
-            <div class="video-category-head"><strong>视频类型</strong><span>先选大方向，系统会根据之后的回应自动调高更合适的类型</span></div>
-            ${videoShareCategoryChips(videoShare)}
-          </div>
-          <label>补充方向<span class="form-hint">可选。每行一个更细的兴趣、关键词或内容方向；会和上面的类型一起用于搜索</span><textarea id="p-video-share-query" placeholder="下班后轻松一点&#10;不太吵的电影剪辑&#10;运动恢复小技巧">${esc(videoShareDiscovery)}</textarea></label>
-          <label>备用链接<span class="form-hint">可选。自动搜索失败时才使用，每行一个视频链接</span><textarea id="p-video-share-list" placeholder="https://v.douyin.com/xxxx/ | 后面那个停顿很好笑">${esc(videoShareText(videoShare))}</textarea></label>
         </section>
       </div>
       <div class="form-actions split profile-savebar"><button class="btn" data-learn-contact="${esc(contact.name)}">学习当前对话</button><button class="btn primary" data-save-profile="${esc(contact.name)}">保存联系人设置</button></div>
@@ -696,9 +676,11 @@ function inquiryEditor(contact) {
 function providersView() {
   const providers = state.data.providers || []
   const editing = state.providerEditing === null ? null : providers[state.providerEditing]
+  const failoverEnabled = state.data.settings?.failoverEnabled !== false
   return shell(header('模型设置', `当前默认：${providerLabel()}`) + `<div class="grid">
     <section class="panel span-5"><div class="panel-head"><div><h2>当前模型</h2><p>${providers.length} 个提供商 · 默认使用置顶模型</p></div></div>
       ${providers.length ? `<div class="list">${providers.map((provider, index) => `<div class="row provider-row ${index === 0 ? 'active-provider' : ''}"><div class="row-main"><strong>${esc(provider.name)}</strong><span>${esc(provider.model)} · ${esc(provider.baseUrl)}</span></div>${index === 0 ? '<span class="tag">默认</span>' : `<button class="btn ghost" data-primary-provider="${index}">设为默认</button>`}<button class="btn ghost" data-test-provider="${index}">测试</button><button class="btn ghost" data-edit-provider="${index}">编辑</button><button class="btn ghost danger" data-delete-provider="${index}">删除</button></div>`).join('')}</div>` : '<div class="empty">还没有配置模型</div>'}
+      <div class="setting-row" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line)"><span><strong>主模型失败自动切换</strong><small>默认模型连接或生成失败时，按列表顺序自动尝试下一个模型（A→B→…）；关闭后只使用默认模型</small></span><input type="checkbox" data-failover ${failoverEnabled ? 'checked' : ''} /></div>
     </section>
     <section class="panel span-7"><div class="panel-head"><div><h2>${editing ? `编辑 ${esc(editing.name)}` : '添加模型'}</h2><p>API Key 在本机加密保存</p></div></div>
       <div class="form"><div class="cols"><label>名称<input id="provider-name" value="${esc(editing?.name || '')}" placeholder="MaxTab" /></label><label>模型<input id="provider-model" value="${esc(editing?.model || '')}" placeholder="gpt-5.5" /></label></div>
@@ -725,11 +707,145 @@ function strategiesView() {
   </div>`)
 }
 
+// 日志类型 → [中文处理行为标签, 徽章色(ok/warn/error)]
+const LOG_LABELS = {
+  message_sent: ['消息已发送', 'ok'],
+  send_error: ['发送失败', 'error'],
+  send_blocked: ['发送被阻止', 'warn'],
+  auto_skip: ['跳过（自己发送）', 'warn'],
+  auto_blocked: ['自动回复被阻止', 'warn'],
+  ai_error: ['AI 调用失败', 'error'],
+  ai_unavailable: ['AI 暂不可用', 'error'],
+  ai_empty: ['AI 无可用回复', 'warn'],
+  ai_reply_rejected: ['AI 回复被拒绝', 'warn'],
+  ai_draft: ['已拟回复草稿', 'warn'],
+  ai_reply_skipped: ['AI 回复已跳过', 'warn'],
+  ai_provider_failed: ['模型服务失败', 'error'],
+  ai_multi_candidate: ['生成多候选回复', 'ok'],
+  ai_natural_rewrite_failed: ['自然改写失败', 'error'],
+  ai_media_analysis_failed: ['媒体分析失败', 'error'],
+  ai_media_analysis_unavailable: ['媒体分析不可用', 'warn'],
+  ai_video_share_draft: ['视频分享草稿', 'warn'],
+  audio_transcription_failed: ['语音转写失败', 'error'],
+  language_learned: ['学习对话风格', 'ok'],
+  media_text_fallback: ['媒体转文本回退', 'warn'],
+  media_skipped: ['跳过媒体', 'warn'],
+  media_audio_transcribed: ['语音已转文字', 'ok'],
+  media_audio_unavailable: ['语音转写不可用', 'warn'],
+  inquiry_sent: ['话题代问已发出', 'ok'],
+  inquiry_answered: ['代问已收到回复', 'ok'],
+  inquiry_failed: ['话题代问失败', 'error'],
+  spark_sent: ['续火花已发送', 'ok'],
+  spark_fill_skipped: ['续火花跳过', 'warn'],
+  spark_fill_failed: ['续火花补发失败', 'error'],
+  video_captured: ['已捕获视频', 'ok'],
+  video_unreadable: ['视频不可读', 'warn'],
+  video_low_confidence: ['视频识别低置信', 'warn'],
+  video_comments_captured: ['已捕获评论', 'ok'],
+  video_comments_unavailable: ['评论不可用', 'warn'],
+  video_public_context_ready: ['公开上下文就绪', 'ok'],
+  video_share_sent: ['视频分享已发送', 'ok'],
+  video_share_failed: ['视频分享失败', 'error'],
+  video_share_caption_fallback: ['视频文案回退', 'warn'],
+  video_share_discovery_fallback: ['视频发现回退', 'warn'],
+  video_hook_debug: ['视频钩子调试', 'warn'],
+  video_url_capture_debug: ['视频地址捕获', 'warn'],
+  worker_error: ['工作进程错误', 'error'],
+  crash: ['未捕获异常', 'error'],
+}
+
+// 提取日志的“最终结果”文案；无结果返回 null
+function logResult(detail = {}) {
+  if (detail.error) return { text: String(detail.error), tone: 'error' }
+  if (detail.text) return { text: String(detail.text), tone: '' }
+  if (detail.answer != null) return { text: `对方回复：${String(detail.answer)}${detail.report ? `\n摘要：${String(detail.report)}` : ''}`, tone: '' }
+  if (detail.messages != null) return { text: `已学习 ${detail.messages} 条对话`, tone: '' }
+  if (detail.question) return { text: `问题：${String(detail.question)}`, tone: '' }
+  if (detail.aiLabel) return { text: String(detail.aiLabel), tone: 'muted' }
+  return null
+}
+
 function auditView() {
   const logs = state.data.logs || []
-  return shell(header('运行记录', '查看 AI 调用、自动发送和失败原因。', '<button class="btn" data-refresh>刷新</button>') + `<section class="panel">
-    ${logs.length ? `<div class="timeline">${logs.map((entry) => { const detail = entry.detail || {}; const modelTag = detail.aiLabel || (detail.ai ? `AI · ${detail.model || '当前模型'}` : ''); return `<div class="event"><time>${new Date(entry.at).toLocaleString('zh-CN', { hour12: false })}</time><div><b>${esc(entry.message || entry.type)}</b><div class="muted">${esc(modelTag || detail.error || detail.name || '')}</div></div></div>` }).join('')}</div>` : '<div class="empty">暂无运行记录</div>'}
+  return shell(header('运行记录', '每条记录在一个框内展示：捕捉到的账号、处理行为与最终结果。', '<button class="btn" data-refresh>刷新</button>') + `<section class="panel">
+    ${logs.length ? `<div class="timeline">${logs.map((entry) => {
+      const detail = entry.detail || {}
+      const [label, tone] = LOG_LABELS[entry.type] || [entry.message || entry.type, 'warn']
+      const account = detail.name ? detail.name : '系统'
+      const result = logResult(detail)
+      const time = new Date(entry.at).toLocaleString('zh-CN', { hour12: false })
+      const source = detail.aiLabel || (detail.ai ? `AI · ${detail.model || '当前模型'}` : '')
+      return `<div class="log-card">
+        <div class="log-field">
+          <span class="log-field-label">账号</span>
+          <div class="log-account"><span class="log-account-avatar">${esc(account.slice(0, 1))}</span><strong>${esc(account)}</strong><time>${esc(time)}</time></div>
+        </div>
+        <div class="log-field">
+          <span class="log-field-label">行为</span>
+          <span class="log-action-badge ${tone}">${esc(label)}</span>
+        </div>
+        ${result ? `<div class="log-result"><span class="log-field-label">结果</span><div class="log-result-text ${result.tone}">${esc(result.text)}${source ? `<div class="muted" style="margin-top:4px">${esc(source)}</div>` : ''}</div></div>` : ''}
+      </div>`
+    }).join('')}</div>` : '<div class="empty">暂无运行记录</div>'}
   </section>`)
+}
+
+function personaView() {
+  const contacts = state.data.contacts || []
+  const learned = contacts.filter((contact) => contact.learning && (contact.learning.messages?.length || contact.learning.contactStyle || contact.learning.ownerStyle))
+  const totalMessages = learned.reduce((sum, contact) => sum + Number(contact.learning?.messages?.length || 0), 0)
+  const head = header('行为池', '聚合展示从对话与视频中学习到的行为特征——这就是当前 AI 回复时的“行为池”。')
+  if (!learned.length) {
+    return shell(head + `<section class="panel"><div class="persona-empty"><strong>尚未学习任何对话</strong><span>保持自动回复运行并开启自动学习后，系统会从与联系人的对话中提炼风格。</span></div></section>`)
+  }
+  return shell(head + `<div class="persona-hero">
+      <strong><span class="persona-icon">${douyinIcon('persona')}</span>当前行为池由 ${learned.length} 位联系人的学习塑造</strong>
+      <span>共聚合 ${totalMessages} 条学习到的对话 · 对方风格影响“如何接话”，我的风格影响“如何说话”。</span>
+    </div>
+    <div class="persona-list">${learned.map((contact) => {
+      const learning = contact.learning || {}
+      const messages = learning.messages || []
+      const contactStyle = learning.contactStyle || {}
+      const ownerStyle = learning.ownerStyle || {}
+      const videoInsights = learning.videoInsights || []
+      const updatedAt = learning.updatedAt ? new Date(learning.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
+      return `<div class="persona-card">
+        <div class="persona-head">
+          <span class="persona-avatar">${esc(contact.name.slice(0, 1))}</span>
+          <div class="persona-head-main"><strong>${esc(contact.name)}</strong><span>已学习 ${messages.length} 条对话${updatedAt ? ` · 更新于 ${esc(updatedAt)}` : ''}</span></div>
+          <button class="btn ghost danger" data-clear-persona="${esc(contact.name)}">清除学习</button>
+        </div>
+        <div class="persona-styles">
+          <div class="persona-style"><span class="persona-style-label">对方风格</span><span class="persona-style-chip ${contactStyle.summary ? '' : 'empty'}">${esc(contactStyle.summary || '尚未提炼')}</span></div>
+          <div class="persona-style"><span class="persona-style-label">我的风格</span><span class="persona-style-chip ${ownerStyle.summary ? '' : 'empty'}">${esc(ownerStyle.summary || '尚未提炼')}</span></div>
+        </div>
+        ${videoInsights.length ? `<div class="persona-style"><span class="persona-style-label">视频洞察</span><div class="persona-insights">${videoInsights.slice(-6).reverse().map((item) => `<div class="persona-insight"><time>${esc(new Date(item.at).toLocaleDateString('zh-CN'))}</time><span>${esc(item.insight)}</span></div>`).join('')}</div></div>` : ''}
+        ${messages.length ? `<details class="persona-details"><summary>查看学习到的对话（${messages.length} 条）</summary><div class="persona-messages">${messages.map((msg) => {
+          const isMe = msg.role === 'me'
+          return `<div class="persona-msg ${isMe ? 'me' : 'contact'}"><span class="who">${isMe ? '我' : esc(contact.name)}</span><span class="text">${esc(msg.text)}</span></div>`
+        }).join('')}</div></details>` : ''}
+      </div>`
+    }).join('')}</div>`)
+}
+
+function bindPersona() {
+  document.querySelectorAll('[data-clear-persona]').forEach((button) => {
+    button.onclick = async () => {
+      const name = button.dataset.clearPersona
+      if (!confirm(`确定清除“${name}”的全部学习记录吗？此操作不可恢复。`)) return
+      button.disabled = true
+      try {
+        const result = await D.ai.clearLearning(name)
+        if (!result?.ok) throw new Error(result?.error || '清除失败')
+        state.data.contacts = state.data.contacts.map((contact) => (contact.name === name ? { ...contact, learning: undefined } : contact))
+        notify('已清除该联系人的学习记录')
+        render()
+      } catch (error) {
+        notify(`清除失败：${error.message}`)
+        button.disabled = false
+      }
+    }
+  })
 }
 
 function bindCommon() {
@@ -996,6 +1112,12 @@ function bindProviders() {
     state.providerEditing = null
     notify('模型已删除')
   } })
+  const failover = document.querySelector('[data-failover]')
+  if (failover) failover.onchange = async () => {
+    const settings = { ...(state.data.settings || {}), failoverEnabled: failover.checked }
+    state.data.settings = settings
+    await save({ settings }, failover.checked ? '已开启模型自动切换' : '已关闭模型自动切换')
+  }
   const cancel = document.querySelector('[data-cancel-provider]')
   if (cancel) cancel.onclick = () => { state.providerEditing = null; render() }
   const saveButton = document.querySelector('[data-save-provider]')
@@ -1036,7 +1158,7 @@ function bindStrategies() {
 function render(options = {}) {
   state.quietRender = Boolean(options.quiet)
   if (state.section === 'appearance') state.section = 'settings'
-  const views = { contacts: contactsView, sparks: sparksView, strategies: strategiesView, providers: providersView, settings: settingsView, audit: auditView }
+  const views = { contacts: contactsView, sparks: sparksView, strategies: strategiesView, providers: providersView, settings: settingsView, audit: auditView, persona: personaView }
   document.getElementById('app').innerHTML = (views[state.section] || contactsView)()
   bindCommon()
   if (state.section === 'contacts') bindContacts()
@@ -1044,6 +1166,7 @@ function render(options = {}) {
   if (state.section === 'strategies') bindStrategies()
   if (state.section === 'providers') bindProviders()
   if (state.section === 'settings') bindSettings()
+  if (state.section === 'persona') bindPersona()
 }
 
 D.onDouyinEvent?.(({ type, payload }) => {

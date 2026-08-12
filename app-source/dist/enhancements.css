@@ -1805,3 +1805,942 @@ select:focus {
     white-space: nowrap;
   }
 }
+
+/* ============================================================
+   Win11 Fluent 覆盖与动效（2026-08-11 版本推进追加）
+   覆盖在全部遗留样式之后，统一 Fluent 视觉与动效。
+   ============================================================ */
+
+/* ---- 页面切换动效 ---- */
+.main-content {
+  animation: page-enter 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- 导航图标 Fluent 化（覆盖抖音双色投影） ---- */
+.douyin-icon {
+  color: var(--muted);
+  filter: none !important;
+  transition: color var(--motion-fast), transform var(--motion-fast);
+}
+
+.nav button:hover .douyin-icon { color: var(--ink); transform: scale(1.06); }
+.nav button.active .douyin-icon { color: var(--accent-ink); }
+
+.brand .douyin-icon {
+  background: var(--accent);
+  color: #fff;
+  filter: none !important;
+  border-radius: 7px;
+  padding: 7px;
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* ---- Fluent 开关（满足 css.test.cjs 约束：appearance:none / 20px / translateX(16px) / 999px） ---- */
+.setting-row input[type=checkbox] {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background var(--motion), box-shadow var(--motion);
+}
+
+.setting-row input[type=checkbox]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: transform var(--motion), left var(--motion);
+}
+
+.setting-row input[type=checkbox]:checked {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.setting-row input[type=checkbox]:checked::after {
+  transform: translateX(16px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* master-switch 与 ai-skill 开关动效补充 */
+.master-switch > span,
+.ai-skill-toggle input[type=checkbox] {
+  transition: background var(--motion), box-shadow var(--motion), transform var(--motion);
+}
+
+.master-switch input:checked + span {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+/* ---- 活动状态条动效 ---- */
+.activity-bar {
+  animation: activity-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes activity-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.activity-pulse i {
+  transition: background var(--motion-fast), box-shadow var(--motion-fast);
+}
+
+/* ---- 通知 Toast 已有入场动画，补充离场过渡 ---- */
+.notice {
+  animation: notice-in var(--motion);
+}
+
+/* ============================================================
+   运行记录 · 卡片化日志（账号对象 / 处理行为 / 最终结果）
+   ============================================================ */
+.timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.log-card {
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+  transition: box-shadow var(--motion), transform var(--motion);
+}
+
+.log-card:hover {
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-1px);
+}
+
+.log-field {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+
+.log-field-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+}
+
+.log-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-account-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.log-account strong { font-size: 13px; font-weight: 600; }
+
+.log-account time {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.log-action-badge {
+  justify-self: start;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--hover-bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.log-action-badge.ok {
+  background: color-mix(in srgb, var(--mint) 12%, transparent);
+  color: var(--mint);
+  border-color: transparent;
+}
+
+.log-action-badge.warn {
+  background: color-mix(in srgb, var(--blue) 12%, transparent);
+  color: var(--blue);
+  border-color: transparent;
+}
+
+.log-action-badge.error {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.log-result {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.log-result-text {
+  color: var(--ink);
+  line-height: 1.55;
+  word-break: break-word;
+  white-space: pre-wrap;
+  background: var(--hover-bg);
+  border-radius: var(--radius-control);
+  padding: 6px 10px;
+}
+
+.log-result-text.error { color: var(--danger); }
+
+.log-result-text.muted { color: var(--muted); }
+
+/* ============================================================
+   人格塑造 · 学习聚合菜单
+   ============================================================ */
+.persona-hero {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%);
+  margin-bottom: 14px;
+}
+
+.persona-hero strong {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.persona-hero span { color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+.persona-hero .persona-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+
+.persona-list {
+  display: grid;
+  gap: 12px;
+}
+
+.persona-card {
+  background: var(--surface);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+  padding: 16px 18px;
+  display: grid;
+  gap: 12px;
+  transition: box-shadow var(--motion);
+}
+
+.persona-card:hover { box-shadow: var(--shadow-hover); }
+
+.persona-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.persona-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.persona-head-main { min-width: 0; flex: 1; }
+
+.persona-head-main strong { display: block; font-size: 14px; font-weight: 600; }
+
+.persona-head-main span {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+
+.persona-styles {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--hover-bg);
+  border-radius: var(--radius-control);
+}
+
+.persona-style {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.persona-style-label { color: var(--muted); font-size: 11px; }
+
+.persona-style-chip {
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.persona-style-chip.empty { color: var(--muted); font-style: italic; }
+
+.persona-details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent-ink);
+  font-weight: 600;
+  user-select: none;
+  padding: 4px 0;
+}
+
+.persona-messages {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.persona-msg {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--surface-solid);
+  border: 1px solid var(--line-2);
+}
+
+.persona-msg .who {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.persona-msg.me .who { color: var(--accent-ink); }
+.persona-msg.contact .who { color: var(--mint); }
+
+.persona-msg .text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+  color: var(--ink);
+}
+
+.persona-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line-2);
+  padding-top: 12px;
+}
+
+.persona-empty {
+  padding: 30px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-card);
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+/* ============================================================
+   Win11 Fluent 主题修正（2026-08-11 追加二）
+   纯色主题 / 暗色全面纠正 / 高斯模糊开关 / 品牌小猫动图
+   ============================================================ */
+
+/* 1. 重新声明主题变量 —— 覆盖上方 1243 行“Warm rack”全局块
+      与 556 行旧暗色块，使 Fluent 令牌在 enhancements.css
+      的加载顺序下仍然生效（本块位于文件末尾，同特异性后出现者胜）。 */
+:root {
+  --ink: #1b1b1b;
+  --muted: #646464;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-2: rgba(0, 0, 0, 0.05);
+  --surface: #fbfbfb;
+  --surface-solid: #fbfbfb;
+  --input-bg: #ffffff;
+  --hover-bg: rgba(0, 0, 0, 0.045);
+  --selected-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+  --accent-ink: var(--accent);
+  --bg: #f3f3f3;
+  --bg-gradient: #f3f3f3;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.12);
+  --danger: #c42b1c;
+}
+
+:root[data-theme="light"] {
+  --ink: #1b1b1b;
+  --muted: #646464;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-2: rgba(0, 0, 0, 0.05);
+  --surface: #fbfbfb;
+  --surface-solid: #fbfbfb;
+  --input-bg: #ffffff;
+  --hover-bg: rgba(0, 0, 0, 0.045);
+  --selected-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, transparent);
+  --bg: #f3f3f3;
+  --bg-gradient: #f3f3f3;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.07);
+  --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.12);
+  --danger: #c42b1c;
+}
+
+:root[data-theme="dark"] {
+  --ink: #f3f3f3;
+  --muted: #a0a0a0;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-2: rgba(255, 255, 255, 0.05);
+  --surface: #2e2e2e;
+  --surface-solid: #2e2e2e;
+  --input-bg: #383838;
+  --hover-bg: rgba(255, 255, 255, 0.06);
+  --selected-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+  --accent-ink: color-mix(in srgb, var(--accent) 78%, #ffffff);
+  --bg: #202020;
+  --bg-gradient: #202020;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.5), 0 12px 32px rgba(0, 0, 0, 0.55);
+  --danger: #ff99a4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="auto"] {
+    --ink: #f3f3f3;
+    --muted: #a0a0a0;
+    --line: rgba(255, 255, 255, 0.09);
+    --line-2: rgba(255, 255, 255, 0.05);
+    --surface: #2e2e2e;
+    --surface-solid: #2e2e2e;
+    --input-bg: #383838;
+    --hover-bg: rgba(255, 255, 255, 0.06);
+    --selected-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+    --accent-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+    --accent-ink: color-mix(in srgb, var(--accent) 78%, #ffffff);
+    --bg: #202020;
+    --bg-gradient: #202020;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.45);
+    --shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.5), 0 12px 32px rgba(0, 0, 0, 0.55);
+    --danger: #ff99a4;
+  }
+}
+
+/* 2. 纯色主题：覆盖 1270-1286 行写死的暖色渐变 / 网格背景 */
+body {
+  background: var(--bg);
+  background-color: var(--bg);
+}
+
+.app {
+  background: var(--bg);
+  background-image: none;
+}
+
+.side {
+  background: var(--surface-solid);
+  border-right: 1px solid var(--line);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.panel {
+  background: var(--surface-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 3. 遗留硬编码浅色纠正（浅色下等价，暗色下随主题） */
+.control-bar,
+.ai-switch,
+.video-category-chip {
+  background: var(--surface-solid);
+}
+
+.ai-switch { color: var(--muted); }
+
+.contact-row {
+  border-bottom: 1px solid var(--line-2);
+}
+
+.contact-row::after {
+  background: var(--line-2);
+}
+
+.contact-row.selected .avatar {
+  background: color-mix(in srgb, var(--accent) 15%, var(--surface-solid));
+}
+
+.message-status[data-tone="ok"] {
+  background: color-mix(in srgb, var(--mint) 10%, transparent);
+  border-color: color-mix(in srgb, var(--mint) 45%, transparent);
+}
+
+.message-status[data-tone="error"] {
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+/* 5. 品牌小猫动图 */
+.brand .douyin-icon {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+  border-radius: 50%;
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+  padding: 5px;
+  animation: cat-breathe 3.2s ease-in-out infinite;
+}
+
+.brand .douyin-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+@keyframes cat-breathe {
+  0%, 100% { transform: scale(1) translateY(0); }
+  50% { transform: scale(1.07) translateY(-1px); }
+}
+
+/* ============================================================
+   紧凑密度覆盖（2026-08-11 追加三）
+   整体压缩间距与字号，提升信息密度
+   ============================================================ */
+
+/* 控制栏 */
+.control-bar {
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+}
+
+.control-bar > div:first-child { gap: 2px; }
+
+.limit-controls { gap: 10px; }
+
+/* 活动状态条 */
+.activity-bar {
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+}
+
+.activity-pulse {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.activity-copy strong { font-size: 12.5px; }
+.activity-copy span { font-size: 11.5px; }
+.activity-meta span { font-size: 11px; }
+
+/* 运行记录卡片 */
+.log-card {
+  padding: 9px 12px;
+  gap: 6px;
+}
+
+.log-field { font-size: 12px; }
+.log-field-label { font-size: 10.5px; }
+.log-account-avatar { width: 22px; height: 22px; font-size: 10.5px; }
+.log-account strong { font-size: 12.5px; }
+.log-action-badge { font-size: 11px; padding: 2px 9px; }
+.log-result-text { padding: 5px 9px; font-size: 12px; }
+
+/* 人格塑造 */
+.persona-hero {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  gap: 4px;
+}
+
+.persona-hero strong { font-size: 13px; }
+.persona-hero span { font-size: 11.5px; }
+.persona-hero .persona-icon { width: 22px; height: 22px; border-radius: 6px; }
+
+.persona-list { gap: 10px; }
+
+.persona-card {
+  padding: 12px 14px;
+  gap: 10px;
+}
+
+.persona-avatar { width: 32px; height: 32px; font-size: 12px; }
+.persona-head-main strong { font-size: 13px; }
+.persona-head-main span { font-size: 11px; margin-top: 2px; }
+
+.persona-styles { padding: 8px 10px; gap: 6px; }
+.persona-style-label { font-size: 10.5px; }
+.persona-style-chip { font-size: 12px; }
+.persona-details summary { font-size: 11.5px; padding: 3px 0; }
+.persona-messages { gap: 5px; max-height: 280px; }
+.persona-msg { padding: 6px 8px; gap: 8px; }
+.persona-msg .who { font-size: 10.5px; }
+.persona-msg .text { font-size: 12px; }
+.persona-actions { gap: 6px; padding-top: 10px; }
+
+/* 设置页 */
+.theme-grid { gap: 8px; }
+.theme-card { padding: 9px 6px; font-size: 11.5px; gap: 3px; }
+.theme-card .swatch { height: 26px; }
+
+.font-size-btn { padding: 9px 6px; font-size: 12px; }
+
+.setting-row, .setting-field { padding: 10px 0; gap: 12px; }
+.settings-subsection { padding: 10px 0; gap: 8px; }
+.settings-subsection > strong { font-size: 12.5px; }
+.settings-times { padding-top: 10px; }
+.settings-actions { padding-top: 10px; }
+.settings-grid { gap: 12px; }
+
+.ai-skills-toolbar { padding: 8px 0; }
+.ai-skill-item { padding: 8px 0; gap: 10px; }
+.ai-skill-head strong { font-size: 12.5px; }
+.ai-skill-desc { font-size: 10.5px; margin-top: 2px; }
+.ai-skills-box { padding: 8px 0; }
+.ai-skills-box summary { font-size: 11.5px; }
+.ai-skills-box textarea { min-height: 56px; padding: 7px 9px; }
+
+/* 联系人 / 视频分类 */
+.contact-row { padding: 4px 6px; }
+.contact-select { gap: 9px; }
+.contact-select .avatar { width: 30px; height: 30px; font-size: 11px; }
+
+.contact-detail-head { gap: 10px; }
+.contact-detail-head h2 { font-size: 17px; }
+.contact-detail-head p { font-size: 11.5px; }
+.contact-state-stack { gap: 5px; }
+.ai-state { padding: 3px 9px; font-size: 11px; }
+
+.video-category-grid { gap: 6px; }
+.video-category-chip { padding: 5px 8px; font-size: 11.5px; }
+.video-category-block { gap: 8px; }
+.video-category-head { margin-bottom: 2px; }
+.video-category-head strong { font-size: 12.5px; }
+
+.profile-sections { gap: 12px; }
+.profile-group { gap: 10px; }
+.group-head { margin-bottom: 4px; }
+.group-head strong { font-size: 13px; }
+.group-head span { font-size: 11px; }
+
+/* 规则 / 列表细节 */
+.strategy-form { padding-bottom: 12px; }
+.rule-test { padding: 12px 0; gap: 8px; }
+.rule-list { max-height: 320px; }
+.task-actions { gap: 6px; }
+.task-actions .btn { padding: 5px 9px; font-size: 11.5px; }
+
+/* 品牌小猫略缩小 */
+.brand .douyin-icon {
+  width: 30px;
+  height: 30px;
+  flex-basis: 30px;
+  padding: 4px;
+}
+
+/* 分栏间距 */
+.workspace-grid { gap: 12px; }
+.contact-list { gap: 3px; }
+
+/* ============================================================
+   视频洞察与品牌小猫修正（2026-08-11 追加四）
+   ============================================================ */
+
+/* 品牌小猫：使用 app-icon.png 图案 + 呼吸动图 */
+.brand-cat {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  object-fit: contain;
+  animation: cat-breathe 3.2s ease-in-out infinite;
+}
+
+/* 人格塑造 · 视频洞察列表 */
+.persona-insights {
+  display: grid;
+  gap: 5px;
+}
+
+.persona-insight {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.persona-insight time {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.persona-insight span {
+  color: var(--ink);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 残留暖色统一为 Fluent 语义色 */
+.btn.danger {
+  color: var(--danger);
+}
+
+.btn.ghost,
+.btn.secondary {
+  background: transparent;
+}
+
+/* ============================================================
+   残留暖色彻底统一 + 滚动条 + 高斯模糊修正（2026-08-12 追加五）
+   ============================================================ */
+
+/* 1. primary 按钮：覆盖旧 Warm rack 主题的橙黄渐变（1407 行） */
+.btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  box-shadow: none;
+  color: #fff;
+  text-shadow: none;
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #000);
+}
+
+/* 2. 错误/警告语义色统一 */
+.activity-bar[data-tone="error"] .activity-pulse i {
+  background: var(--danger);
+}
+
+.status-error,
+.error {
+  color: var(--danger);
+}
+
+/* 3. 滚动条跟随主题（覆盖 1267 行红色 scrollbar-color） */
+html {
+  scrollbar-color: color-mix(in srgb, var(--muted) 55%, transparent) transparent;
+}
+
+/* ============================================================
+   旧 Warm rack 主题残留全覆盖（2026-08-12 追加六）
+   ============================================================ */
+
+/* 导航：hover / active / 指示条 */
+.nav button:hover {
+  background: var(--hover-bg);
+  color: var(--ink);
+  transform: none;
+}
+
+.nav button.active {
+  background: var(--selected-bg);
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--accent-ink);
+}
+
+.nav button.active::before {
+  background: var(--accent);
+}
+
+/* 按钮全系（覆盖暖黄渐变 / 光扫 / 暖阴影） */
+.btn {
+  position: static;
+  overflow: visible;
+  min-height: 0;
+  background: var(--surface-solid);
+  border-color: var(--line);
+  box-shadow: none;
+  color: var(--ink);
+}
+
+.btn::after {
+  content: none;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--line);
+  box-shadow: none;
+  transform: none;
+}
+
+.btn:hover:not(:disabled)::after {
+  animation: none;
+}
+
+.btn:active:not(:disabled) {
+  box-shadow: none;
+  transform: scale(0.97);
+}
+
+/* 标签页 */
+.tabs {
+  background: transparent;
+  border-color: var(--line);
+}
+
+.tabs button.active {
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+/* 输入控件 */
+input,
+textarea,
+select {
+  background: var(--input-bg);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+input:hover,
+textarea:hover,
+select:hover {
+  background: var(--input-bg);
+  border-color: var(--line);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* 活动状态条 */
+.activity-bar {
+  background: var(--surface-solid);
+  border-color: var(--line);
+  box-shadow: var(--shadow);
+}
+
+.activity-pulse i {
+  box-shadow: none;
+}
+
+/* 通知 / 列表 / 标签 / 图标语义色 */
+.notice,
+.toast,
+.log-row {
+  background: var(--surface-solid);
+  border-color: var(--line);
+}
+
+.row.selected,
+.contact-row.selected,
+.video-category-chip.active {
+  background: var(--selected-bg);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.badge,
+.pill,
+.tag {
+  background: color-mix(in srgb, var(--mint) 11%, transparent);
+  border-color: transparent;
+  color: var(--mint);
+}
+
+.status-warn,
+.warning {
+  color: var(--blue);
+}
+
+.icon {
+  background: var(--accent-bg);
+  border: 0;
+  color: var(--accent);
+}
+
+.icon.blue {
+  background: color-mix(in srgb, var(--blue) 10%, transparent);
+  color: var(--blue);
+}
+
+.icon.green {
+  background: color-mix(in srgb, var(--mint) 10%, transparent);
+  color: var(--mint);
+}
+
+/* 开关（.switch 遗留类） */
+.switch {
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+  border: 0;
+  box-shadow: none;
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+

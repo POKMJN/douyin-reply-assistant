@@ -1,7 +1,7 @@
-#define MyAppName "续声"
-#define MyAppVersion "0.4.0"
-#define MyAppPublisher "续声"
-#define MyAppExeName "续声.exe"
+#define MyAppName "抖音回复助手"
+#define MyAppVersion "0.5.0"
+#define MyAppPublisher "抖音回复助手"
+#define MyAppExeName "抖音回复助手.exe"
 #ifndef MyAppAsarSource
 #define MyAppAsarSource "resources\app.asar"
 #endif
@@ -15,13 +15,13 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=.
-OutputBaseFilename=续声_安装包_v{#MyAppVersion}
+OutputBaseFilename=抖音回复助手_安装包_v{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=app.ico
 UninstallDisplayName={#MyAppName}
-UninstallDisplayIcon={app}\续声.exe
+UninstallDisplayIcon={app}\抖音回复助手.exe
 PrivilegesRequired=admin
 
 [Languages]
@@ -32,7 +32,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 
 [Files]
 ; 主程序
-Source: "续声.exe"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
+Source: "抖音回复助手.exe"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
 ; Electron 运行时 DLL
 Source: "d3dcompiler_47.dll"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
 Source: "ffmpeg.dll"; DestDir: "{app}"; Flags: ignoreversion uninsremovereadonly
@@ -66,4 +66,4 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 续声"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 抖音回复助手"; Flags: nowait postinstall skipifsilent

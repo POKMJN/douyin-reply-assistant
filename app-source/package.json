@@ -1,9 +1,9 @@
 {
-  "name": "douyin-reply-console",
+  "name": "douyin-reply-assistant",
   "private": true,
-  "version": "0.4.0",
-  "description": "本地运行的抖音私信与续火花控制台",
-  "author": "续声",
+  "version": "0.5.0",
+  "description": "本地运行的抖音回复助手：联系人管理、AI 自动回复、手动拟回复与续火花任务",
+  "author": "抖音回复助手",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

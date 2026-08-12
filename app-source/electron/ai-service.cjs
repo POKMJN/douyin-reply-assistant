@@ -174,14 +174,32 @@ function analyzeLanguageStyle(messages, role) {
   return { sampleCount: samples.length, avgLength, summary: habits.join('；'), samples: samples.slice(-8) }
 }
 
-function buildLearningProfile(messages) {
+function buildLearningProfile(messages, previous = {}) {
   const normalized = normalizeLearnedMessages(messages)
   return {
     messages: normalized,
     contactStyle: analyzeLanguageStyle(normalized, 'contact'),
     ownerStyle: analyzeLanguageStyle(normalized, 'me'),
+    videoInsights: Array.isArray(previous.videoInsights) ? previous.videoInsights : [],
     updatedAt: new Date().toISOString(),
   }
+}
+
+// 从媒体分析文本中提取“人格洞察：”后的性格/回应温度判断
+function extractVideoInsight(rawText) {
+  const match = String(rawText || '').match(/人格洞察：(.+)/)
+  if (!match) return ''
+  const insight = match[1].trim().replace(/[。.]+$/, '')
+  return insight && insight !== '样本不足' ? insight.slice(0, 120) : ''
+}
+
+// 把长期视频洞察汇总为回应温度指导（抽象更抽象、温情更温情）
+function videoToneGuidance(learning) {
+  const insights = Array.isArray(learning?.videoInsights) ? learning.videoInsights : []
+  if (!insights.length) return ''
+  const summary = insights.slice(-8).map((item) => item.insight || '').filter(Boolean).join('；')
+  if (!summary) return ''
+  return `\n对方近期分享内容的长期人格洞察（只用于校准回应温度，不要逐条复述）：${summary}\n回应温度原则：对方内容偏抽象/离谱/搞笑就回得更抽象俏皮，偏温情/感性/情绪化就回得更温柔走心，偏务实就少抒情多给真实反馈——和对方节奏一致，但不要机械模仿。`
 }
 
 function buildTurnGuidance(contact, incoming) {
@@ -340,7 +358,7 @@ ${profile.notes ? `回复时的额外注意事项：${profile.notes}` : ''}
 ${(() => { const t = profile.tone || contact?._globalDefaultTone || ''; return t && t !== '自动跟随语境' ? `期望的语气风格：${t}` : '' })()}
 自动学习到的对方说话特点：${learning.contactStyle?.summary || '样本不足，先跟随对方当前消息的长度和语气'}
 自动学习到的账号本人对这位联系人的说话特点：${learning.ownerStyle?.summary || '样本不足'}
-${examples.length ? `人工提供的账号本人说话样例（优先级最高，模仿语气、用词和句长，但不要机械照抄）：\n${examples.map((item) => `- ${item}`).join('\n')}` : '没有人工说话样例，请优先参考自动学习到的本人历史回复。'}${buildSkillsBlock(skills, 'chat')}`
+${examples.length ? `人工提供的账号本人说话样例（优先级最高，模仿语气、用词和句长，但不要机械照抄）：\n${examples.map((item) => `- ${item}`).join('\n')}` : '没有人工说话样例，请优先参考自动学习到的本人历史回复。'}${videoToneGuidance(learning)}${buildSkillsBlock(skills, 'chat')}`
 }
 
 function buildVideoPrompt(contact, skills = []) {
@@ -372,7 +390,7 @@ ${replyTiming.text ? `对方消息时间与回复取舍：
 ${replyTiming.text}` : ''}
 本人语气：${learning.ownerStyle?.summary || '跟随当前聊天气氛，简短自然'}。
 ${(() => { const t = profile.tone || contact?._globalDefaultTone || ''; return t && t !== '自动跟随语境' ? `期望的语气风格：${t}` : '' })()}
-${examples.length ? `说话样例：${examples.join(' / ')}` : ''}${buildSkillsBlock(skills, 'video')}`}
+${examples.length ? `说话样例：${examples.join(' / ')}` : ''}${videoToneGuidance(learning)}${buildSkillsBlock(skills, 'video')}`}
 
 function buildMediaAnalysisPrompt(contact, mediaMeta = {}) {
   const profile = contact?.profile || {}
@@ -426,7 +444,7 @@ function buildVideoSharePrompt(contact, video = {}, skills = []) {
 本人语气：${learning.ownerStyle?.summary || '跟随当前聊天语气，简短自然'}。
 视频标题：${title || '未填写'}
 视频内容亮点：${note || '未填写'}
-视频标签：${tags.join('、') || '无'}${buildSkillsBlock(skills, 'share')}`
+视频标签：${tags.join('、') || '无'}${videoToneGuidance(learning)}${buildSkillsBlock(skills, 'share')}`
 }
 
 function normalizeFrameLimit(value) {
@@ -575,7 +593,22 @@ function buildChatMessages(contact, incoming, videoFrames, mediaAnalysis = '', m
 class AiService {
   constructor(storage) { this.storage = storage }
   hasProvider() { return Boolean(this.storage.get().providers?.length) }
-  analyzeConversation(messages) { return buildLearningProfile(messages) }
+  analyzeConversation(messages, previous = {}) { return buildLearningProfile(messages, previous) }
+  recordVideoInsight(name, insight) {
+    if (!name || !insight) return
+    const current = this.storage.get()
+    const contacts = (current.contacts || []).map((contact) => {
+      if (contact.name !== name) return contact
+      const videoInsights = [...(Array.isArray(contact.learning?.videoInsights) ? contact.learning.videoInsights : []), { at: new Date().toISOString(), insight }].slice(-24)
+      return { ...contact, learning: { ...(contact.learning || {}), videoInsights } }
+    })
+    this.storage.update({ contacts })
+  }
+  // 故障转移：settings.failoverEnabled 关闭时只使用主模型，开启则按列表顺序依次尝试
+  providerPool(providers) {
+    const failover = this.storage.get().settings?.failoverEnabled !== false
+    return failover ? providers : (providers || []).slice(0, 1)
+  }
   keyFor(provider) { return provider?.keyCipher ? safeStorage.decryptString(Buffer.from(provider.keyCipher, 'base64')) : '' }
   saveProvider(input) {
     const { apiKey, index: requestedIndex, ...publicConfig } = input
@@ -634,7 +667,7 @@ class AiService {
     const config = this.storage.get(); const providers = config.providers || []
     if (!providers.length) throw new Error('请先配置可用模型')
     let lastError
-    for (const candidate of providers) {
+    for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.audioBaseUrl || candidate.baseUrl)
         const model = candidate.transcriptionModel || candidate.audioModel || candidate.asrModel || 'whisper-1'
@@ -681,7 +714,7 @@ class AiService {
     const config = this.storage.get(); const providers = config.providers || []
     if (!providers.length) throw new Error('请先配置可用模型')
     let provider; let out; let lastError
-    for (const candidate of providers) {
+    for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
         out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature, max_tokens: maxTokens }))
@@ -705,18 +738,20 @@ class AiService {
       {
         role: 'user',
         content: [
-          { type: 'text', text: `${String(incoming || '[视频]').slice(0, 300)}\n关键帧已按时间顺序抽取，请先像看短视频一样整理：发生了什么、关键画面/文字/声音、笑点或情绪点、适合怎么接话。` },
+          { type: 'text', text: `${String(incoming || '[视频]').slice(0, 300)}\n关键帧已按时间顺序抽取，请先像看短视频一样整理：发生了什么、关键画面/文字/声音、笑点或情绪点、适合怎么接话。\n最后另起一行，以「人格洞察：」开头，用一句话判断分享这条视频的人的内容偏好和适合的回应温度（例如：喜欢抽象离谱的内容，回应可以更抽象俏皮；或偏温情走心，回应要更温柔；或偏实用，回应直接给真实反馈）。信息不足就写「人格洞察：样本不足」。` },
           ...frames.map((url) => ({ type: 'image_url', image_url: { url, detail: normalizedMedia.frameDetail } })),
         ],
       },
     ]
     let lastError
-    for (const candidate of providers || []) {
+    for (const candidate of this.providerPool(providers || [])) {
       try {
         const base = apiBase(candidate.baseUrl)
         const out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature: 0.15, max_tokens: 260 }), { retries: 1, timeoutMs: 22000 })
-        const text = cleanGeneratedText(out.choices?.[0]?.message?.content)
-        if (text) return { text, model: candidate.model, provider: candidate.name }
+        const rawText = cleanGeneratedText(out.choices?.[0]?.message?.content)
+        const insight = extractVideoInsight(rawText)
+        const text = rawText.replace(/人格洞察：[^\n]*/g, '').trim()
+        if (text) return { text, insight, model: candidate.model, provider: candidate.name }
       } catch (error) {
         lastError = error
         this.storage.addLog({ type: 'ai_media_analysis_failed', message: `${candidate.name || candidate.model} 媒体理解失败，正在尝试备用模型`, detail: { model: candidate.model, provider: candidate.name, error: error.message } })
@@ -846,6 +881,7 @@ class AiService {
     const mediaAnalysis = frames.length && shouldAnalyzeMediaFirst
       ? await this.analyzeMediaFrames({ contact: contactWithTone, incoming, media: { ...media, frames }, providers })
       : { text: '' }
+    if (mediaAnalysis.insight && contact?.name) this.recordVideoInsight(contact.name, mediaAnalysis.insight)
     const messages = buildChatMessages(contactWithTone, incoming, frames, mediaAnalysis.text, { ...media, frames }, config.aiSkills || [])
     // 多候选回复：对视频/媒体消息生成 2 条候选并评分择优
     const multiCandidate = frames.length > 0 && config.settings?.multiCandidateReply !== false
@@ -874,7 +910,7 @@ class AiService {
       out = { choices: [{ message: { content: multiCandidateText } }] }
       provider = configuredProviders[0]
     } else {
-      for (const candidate of providers) {
+      for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
         out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature: 0.85, max_tokens: 120 }), { retries: 1, timeoutMs: 18000 })
@@ -935,7 +971,7 @@ class AiService {
     let provider
     let out
     let lastError
-    for (const candidate of providers) {
+    for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
         out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature: 0.9, max_tokens: 80 }))

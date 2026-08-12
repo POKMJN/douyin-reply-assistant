@@ -9,13 +9,13 @@ const defaults = {
   profiles: [],
   logs: [],
   sendHistory: [],
-  appearance: { theme: 'light', fontSize: 'medium', accentColor: '#2f7fd8', backgroundColor: '#eef2f5', motion: 'standard', defaultTone: '' },
+  appearance: { theme: 'auto', fontSize: 'medium', accentColor: '#0067c0', backgroundColor: '#eef2f5', motion: 'standard', blur: false, defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
     desktopNotifications: true, soundNotifications: false, notifyOnSuccess: true, notifyOnFailure: true,
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard', multiCandidateReply: true,
-    saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false,
+    saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false, failoverEnabled: true,
   },
 }
 
@@ -141,7 +141,7 @@ class JsonStorage {
       delete automation.automation
       const settings = { ...defaults.settings, ...(saved.settings || {}) }
       const appearance = { ...defaults.appearance, ...(saved.appearance || {}) }
-      if (appearance.accentColor === '#e95d48') appearance.accentColor = defaults.appearance.accentColor
+      if (appearance.accentColor === '#e95d48' || appearance.accentColor === '#2f7fd8') appearance.accentColor = defaults.appearance.accentColor
       if (appearance.backgroundColor === '#cdf2ff') {
         appearance.backgroundColor = appearance.theme === 'dark' ? '#172338' : defaults.appearance.backgroundColor
       }

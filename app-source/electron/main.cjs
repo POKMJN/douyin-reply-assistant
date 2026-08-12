@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, Notification } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, Notification, nativeTheme } = require('electron')
 const path = require('node:path')
 const { JsonStorage } = require('./storage.cjs')
 const { DouyinService } = require('./douyin-service.cjs')
@@ -59,9 +59,10 @@ function createWindow() {
     height: 920,
     minWidth: 980,
     minHeight: 680,
-    backgroundColor: '#fff7e8',
+    // Win11 Fluent：窗口背景跟随系统明暗（纯色主题，不使用系统 Mica）
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#202020' : '#f3f3f3',
     icon: appIcon,
-    title: '续声 · 抖音私信助手',
+    title: '抖音回复助手',
     autoHideMenuBar: true,
     show: !settings.startMinimized,
     webPreferences: {
@@ -110,8 +111,8 @@ function notifyAutomationEvent(event) {
   if ((failed && settings.notifyOnFailure === false) || (succeeded && settings.notifyOnSuccess === false)) return
   if (!failed && !succeeded) return
   new Notification({
-    title: failed ? '续声任务失败' : '续声任务完成',
-    body: event.payload?.message || (failed ? '请打开续声查看失败原因' : '任务已执行完成'),
+    title: failed ? '抖音回复助手任务失败' : '抖音回复助手任务完成',
+    body: event.payload?.message || (failed ? '请打开抖音回复助手查看失败原因' : '任务已执行完成'),
     silent: !settings.soundNotifications,
   }).show()
 }
@@ -119,9 +120,9 @@ function notifyAutomationEvent(event) {
 function createTray() {
   const icon = imageOrFallback('tray-icon.png', 'app-icon.png')
   tray = new Tray(icon.resize({ width: 16, height: 16 }))
-  tray.setToolTip('续声 · 抖音私信助手')
+  tray.setToolTip('抖音回复助手')
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示续声', click: () => { mainWindow?.show(); mainWindow?.focus() } },
+    { label: '显示抖音回复助手', click: () => { mainWindow?.show(); mainWindow?.focus() } },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit() } },
   ]))
@@ -129,7 +130,7 @@ function createTray() {
 }
 
 ipcMain.handle('app:info', () => ({
-  name: '续声',
+  name: '抖音回复助手',
   version: app.getVersion(),
   platform: process.platform,
 }))
@@ -140,7 +141,7 @@ ipcMain.handle('app:open-external', (_event, url) => {
 })
 
 function getDouyinService() {
-  if (!douyin) throw new Error('抖音登录服务尚未初始化，请重启续声')
+  if (!douyin) throw new Error('抖音登录服务尚未初始化，请重启抖音回复助手')
   return douyin
 }
 
@@ -179,12 +180,24 @@ function registerAiHandlers() {
   ipcMain.handle('ai:get-skills', guarded(() => ({ ok: true, skills: storage.get().aiSkills || [] })))
   ipcMain.handle('ai:save-skills', guarded((skills) => ai.saveSkills(skills)))
   ipcMain.handle('ai:import-skills', guarded((rawText) => ai.importSkills(rawText)))
+  ipcMain.handle('ai:clear-learning', guarded((name) => {
+    if (typeof name !== 'string' || !name) throw new Error('缺少联系人名称')
+    const state = storage.get()
+    const contacts = (state.contacts || []).map((contact) => {
+      if (contact.name !== name || !contact.learning) return contact
+      const next = { ...contact }
+      delete next.learning
+      return next
+    })
+    storage.update({ contacts })
+    return { ok: true, name }
+  }))
 }
 
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return
   if (process.platform === 'win32') {
-    app.setAppUserModelId('xusheng.desktop')
+    app.setAppUserModelId('douyin-reply-assistant.desktop')
     ownsBytedanceProtocol = app.setAsDefaultProtocolClient(BYTEDANCE_PROTOCOL)
   }
   storage = new JsonStorage(app.getPath('userData'))

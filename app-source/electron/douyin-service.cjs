@@ -2186,7 +2186,7 @@ class DouyinService {
     const index = contacts.findIndex((contact) => contact.name === name)
     const current = index >= 0 ? contacts[index] : { id: name, name }
     const messages = mergeMessageHistory(current.learning?.messages, visibleMessages)
-    const learning = this.analyzeConversation(messages)
+    const learning = this.analyzeConversation(messages, current.learning)
     const updated = { ...current, learning }
     if (index >= 0) contacts[index] = updated
     else contacts.push(updated)
@@ -2230,10 +2230,10 @@ class DouyinService {
   }
 
   // 用 AI 归纳对话风格;未配置 AI 时退化为仅保存原始消息(行为与旧内联逻辑一致)
-  analyzeConversation(messages) {
+  analyzeConversation(messages, previous = {}) {
     return this.ai?.analyzeConversation
-      ? this.ai.analyzeConversation(messages)
-      : { messages, updatedAt: new Date().toISOString() }
+      ? this.ai.analyzeConversation(messages, previous)
+      : { messages, videoInsights: Array.isArray(previous.videoInsights) ? previous.videoInsights : [], updatedAt: new Date().toISOString() }
   }
 
   recordConversationMessage(name, role, text, fallbackContact = {}) {
@@ -2244,7 +2244,7 @@ class DouyinService {
     const index = contacts.findIndex((contact) => contact.name === name)
     const current = index >= 0 ? contacts[index] : { ...fallbackContact, id: fallbackContact.id || name, name }
     const messages = mergeMessageHistory(current.learning?.messages, [{ role, text: value }])
-    const learning = this.analyzeConversation(messages)
+    const learning = this.analyzeConversation(messages, current.learning)
     const updated = { ...current, learning }
     if (index >= 0) contacts[index] = updated
     else contacts.push(updated)
@@ -2702,6 +2702,8 @@ class DouyinService {
   }
 
   async sendVideoShareTask(name, task) {
+    // 自动发视频已暂时禁用（2026-08-12）
+    return { ok: false, reason: 'disabled' }
     if (!name) throw new Error('Contact name cannot be empty')
     const state = this.storage.get()
     const contact = (state.contacts || []).find((item) => item.name === name) || { name }
@@ -2725,6 +2727,7 @@ class DouyinService {
   }
 
   async processVideoShareTask(sparks, index, task, now, blacklist, canSend) {
+    return // 自动发视频已暂时禁用（2026-08-12）
     const today = localDateKey(now)
     const previousState = freshVideoShareState(task.videoShareState, today)
     const maxPerDay = videoShareDailyLimit(task)
@@ -2772,6 +2775,7 @@ class DouyinService {
   }
 
   async processContactVideoShareTasks(contacts, now, blacklist, canSend) {
+    return // 自动发视频已暂时禁用（2026-08-12）
     let changed = false
     const today = localDateKey(now)
     for (let index = 0; index < contacts.length; index += 1) {
@@ -3077,7 +3081,7 @@ class DouyinService {
       const muted = start === end || (start < end ? current >= start && current < end : current >= start || current < end)
       if (muted) return
     }
-    const hasContactVideoShares = (state.contacts || []).some((contact) => contact?.profile?.videoShare?.enabled)
+    const hasContactVideoShares = false // 自动发视频已暂时禁用（2026-08-12）
     const hasPendingInquiries = (config.inquiries || []).some((item) => item?.status === 'waiting')
     const hasWork = Boolean((config.autoReply && !config.paused) || (config.sparks || []).some((task) => task.enabled) || hasContactVideoShares || hasPendingInquiries)
     if (!hasWork) return
