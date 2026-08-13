@@ -37,6 +37,41 @@ const VIDEO_SHARE_CATEGORIES = [
   '治愈解压',
 ]
 
+// 行为池 → 兴趣标签的规则兜底：无 AI 时按关键词粗匹配对方兴趣分类
+const VIDEO_SHARE_CATEGORY_KEYWORDS = {
+  '搞笑反转': ['搞笑', '反转', '好笑', '段子', '沙雕', '笑死', '梗'],
+  '猫狗萌宠': ['猫', '狗', '宠物', '喵', '汪', '萌宠', '修狗', '铲屎'],
+  '美食探店': ['吃', '美食', '探店', '火锅', '餐厅', '做饭', '好吃', '奶茶', '外卖'],
+  '电影剪辑': ['电影', '剧', '追剧', '剪辑', '影视', '上映'],
+  '游戏高能': ['游戏', '打游戏', '王者', '原神', '上分', '排位', '英雄联盟', 'steam'],
+  '音乐现场': ['音乐', '唱歌', '歌', '演唱会', '乐队', 'live', 'rap'],
+  '健身运动': ['健身', '运动', '跑步', '锻炼', '减肥', '撸铁', '瑜伽', '打球'],
+  '情感共鸣': ['恋爱', '分手', '吵架', '暧昧', '感情', '对象', '前任'],
+  '知识科普': ['知识', '科普', '学习', '涨知识', '历史', '科学', '考研', '考试', '读书'],
+  '旅行风景': ['旅行', '旅游', '风景', '出差', '海边', '城市', '机票', '自驾'],
+  '穿搭美妆': ['穿搭', '美妆', '化妆', '衣服', '口红', '发型', '护肤'],
+  '生活日常': ['生活', '日常', '上班', '下班', '搬砖', '加班'],
+  '科技数码': ['手机', '电脑', '数码', '科技', '耳机', '显卡'],
+  '动漫二次元': ['动漫', '二次元', '番', '漫画', 'cos', '手办'],
+  '热点话题': ['热点', '新闻', '热搜', '八卦'],
+  '治愈解压': ['解压', '治愈', '放松', '冥想', '助眠'],
+}
+
+// 无 AI 时的规则兜底：从对方消息、长期记忆、性格描述里按关键词粗匹配分类
+function inferCategoriesByRules(contact = {}) {
+  const learning = contact?.learning || {}
+  const text = [
+    ...(Array.isArray(learning.messages) ? learning.messages : []).filter((item) => item.role === 'contact').map((item) => String(item.text || '')),
+    ...(Array.isArray(learning.facts) ? learning.facts : []).map((item) => String(item?.text || '')),
+    String(contact?.profile?.personality || ''),
+  ].join(' ').toLowerCase()
+  if (!text.trim()) return []
+  return VIDEO_SHARE_CATEGORIES.filter((category) => {
+    const keywords = VIDEO_SHARE_CATEGORY_KEYWORDS[category] || []
+    return keywords.some((keyword) => text.includes(keyword))
+  }).slice(0, 3)
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const normalizeEditorText = (text) => String(text || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim()
 function extractPublicCommentItemText(value) {
@@ -626,7 +661,10 @@ const videoShareStateAfterSend = (previousState = {}, video = {}, task = {}, now
 const videoShareDiscoveryTerms = (contact = {}, task = {}) => {
   const profile = contact?.profile || {}
   const stats = videoShareCategoryStats(contact, task)
-  const categories = normalizeVideoShareCategories(task.categories || profile.videoShare?.categories)
+  // 手选分类优先；未手选时用行为池推断的兴趣标签（inferContactVideoShareTags 已存好）
+  const selected = normalizeVideoShareCategories(task.categories || profile.videoShare?.categories)
+  const inferred = normalizeVideoShareCategories(profile.videoShare?.inferredCategories)
+  const categories = (selected.length ? selected : inferred)
     .sort((left, right) => videoShareCategoryScore(right, stats) - videoShareCategoryScore(left, stats))
   const raw = [
     categories,
@@ -1422,6 +1460,8 @@ class DouyinService {
         backgroundThrottling: false,
       },
     })
+    // 后台窗口静音：搜索/观看视频时页面自动播放不发出任何声音，画面照常渲染
+    this.discoveryWindow.webContents.setAudioMuted(true)
     const denyDeepLink = (event, url) => {
       if (/^bytedance:/i.test(url)) event.preventDefault()
     }
@@ -2495,6 +2535,39 @@ class DouyinService {
     return { ...selected, category: inferVideoShareCategory(selected, task) }
   }
 
+  // 行为池 → 兴趣标签：用 AI 从对方的近期消息/长期记忆/性格推断感兴趣的视频分类，
+  // AI 不可用或未匹配到时用关键词规则兜底；结果缓存到 contact.profile.videoShare.inferredCategories，
+  // 每天每个联系人最多推断一次。
+  async inferContactVideoShareTags(contact) {
+    if (!contact?.name) return []
+    const today = localDateKey()
+    const videoShare = contact?.profile?.videoShare || {}
+    if (videoShare.inferredAt === today) return videoShare.inferredCategories || []
+    let tags = []
+    if (this.ai?.inferVideoShareCategories) {
+      try {
+        const result = await this.ai.inferVideoShareCategories({ contact, categories: VIDEO_SHARE_CATEGORIES })
+        tags = Array.isArray(result?.categories) ? result.categories : []
+      } catch (_) { /* 推断失败走规则兜底 */ }
+    }
+    if (!tags.length) tags = inferCategoriesByRules(contact)
+    const state = this.storage.get()
+    const contacts = [...(state.contacts || [])]
+    const idx = contacts.findIndex((item) => item.name === contact.name)
+    if (idx >= 0) {
+      contacts[idx] = {
+        ...contacts[idx],
+        profile: {
+          ...(contacts[idx].profile || {}),
+          videoShare: { ...(contacts[idx].profile?.videoShare || {}), inferredCategories: tags, inferredAt: today },
+        },
+      }
+      this.storage.update({ contacts })
+    }
+    if (tags.length) this.log('video_share_inferred', `已从行为池推断 ${contact.name} 的兴趣标签`, { name: contact.name, categories: tags, source: tags.length ? 'ai' : 'rules' })
+    return tags
+  }
+
   async discoverVideoShareItem(contact = {}, task = {}) {
     const terms = videoShareDiscoveryTerms(contact, task)
     const used = new Set(Array.isArray(task?.videoShareState?.usedVideoKeys) ? task.videoShareState.usedVideoKeys : [])
@@ -2581,7 +2654,8 @@ class DouyinService {
     if (shouldHideDiscoveryWindow) win.showInactive()
     try {
     await win.loadURL(url)
-    await sleep(3500)
+    // 真人感：在视频页随机停留 3.5~8 秒（模拟“看了一会儿再分享”），避免固定节奏被风控
+    await sleep(3500 + Math.floor(Math.random() * 4500))
 
     const shareButton = await this.waitForPagePoint(win, `(() => {
       const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
@@ -2616,14 +2690,24 @@ class DouyinService {
       const nodes = [...document.querySelectorAll('button, [role="button"], a, div, span')]
       const candidates = nodes.map((node) => {
         const text = normalize([node.innerText, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '))
-        if (!visible(node) || !/(私信|朋友|好友|联系人|发给朋友|分享给朋友|发送给朋友|抖音好友)/.test(text) || /(复制|链接|微信|QQ|微博|下载|举报|保存|更多)/i.test(text)) return null
+        if (!visible(node) || !text) return null
+        if (/(复制|链接|微信|QQ|微博|下载|举报|保存)/.test(text)) return null
+        const isFriend = /(私信|发给朋友|发送给朋友|分享给朋友|转发给朋友|私信好友|好友|朋友|联系人|转发)/.test(text)
+        if (!isFriend) return null
         const clickTarget = node.closest('button, [role="button"], a') || node
         const rect = clickTarget.getBoundingClientRect()
-        const score = (/私信|发给朋友|发送给朋友/.test(text) ? 8 : 0) + (/朋友|好友/.test(text) ? 4 : 0)
+        const score = (/私信|发给朋友|发送给朋友|分享给朋友|转发给朋友|私信好友/.test(text) ? 8 : 0) + (/朋友|好友|联系人/.test(text) ? 4 : 0) + (/转发/.test(text) ? 3 : 0)
         return { node: clickTarget, rect, score }
       }).filter(Boolean).sort((left, right) => right.score - left.score)
       const selected = candidates[0]
-      if (!selected) return null
+      if (!selected) {
+        const debug = [...document.querySelectorAll('button, [role="button"], a, div, span')]
+          .filter(visible)
+          .map((n) => normalize([n.innerText, n.getAttribute('aria-label'), n.getAttribute('title')].join(' ')))
+          .filter((t) => t && t.length <= 20)
+          .slice(0, 30)
+        return { error: 'share panel buttons: ' + JSON.stringify(debug) }
+      }
       return { x: Math.round(selected.rect.left + selected.rect.width / 2), y: Math.round(selected.rect.top + selected.rect.height / 2) }
     })()`, 'Could not find the share-to-friends entry')
     await this.clickPagePoint(win, friendTarget, 'Could not find the share-to-friends entry')
@@ -2648,7 +2732,12 @@ class DouyinService {
       if (!field) return false
       field.focus()
       if ('value' in field) {
-        field.value = target
+        // React 受控组件：用原生 value setter 再派发 input 才能真正触发状态更新（直接赋值不生效）
+        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+        if (nativeSetter) nativeSetter.call(field, target)
+        else field.value = target
+        field.dispatchEvent(new Event('input', { bubbles: true }))
       } else {
         const selection = window.getSelection()
         const range = document.createRange()
@@ -2656,8 +2745,8 @@ class DouyinService {
         selection.removeAllRanges()
         selection.addRange(range)
         if (!document.execCommand('insertText', false, target)) field.textContent = target
+        field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: target }))
       }
-      field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: target }))
       field.dispatchEvent(new Event('change', { bubbles: true }))
       return true
     })()`).catch(() => false)
@@ -2681,7 +2770,19 @@ class DouyinService {
         return { node: clickTarget, rect, score }
       }).filter(Boolean).sort((left, right) => right.score - left.score)
       const selected = candidates[0]
-      if (!selected) return null
+      if (!selected) {
+        const containing = [...document.querySelectorAll('button, [role="button"], li, label, div, span')]
+          .filter(visible)
+          .map((n) => normalize([n.innerText, n.getAttribute('aria-label'), n.getAttribute('title')].join(' ')))
+          .filter((t) => t.includes(target))
+          .slice(0, 10)
+        const allItems = [...document.querySelectorAll('li, [role="option"], [class*="friend" i], [class*="contact" i], [class*="user" i], [class*="item" i]')]
+          .filter(visible)
+          .map((n) => normalize(n.innerText || n.getAttribute('aria-label') || n.getAttribute('title') || ''))
+          .filter((t) => t && t.length <= 30)
+          .slice(0, 20)
+        return { error: 'contact match failed; containing=' + JSON.stringify(containing) + '; items=' + JSON.stringify(allItems) }
+      }
       return { x: Math.round(selected.rect.left + selected.rect.width / 2), y: Math.round(selected.rect.top + selected.rect.height / 2) }
     })()`, `Could not find contact "${target}" in the share panel`)
     await this.clickPagePoint(win, contactPoint, `Could not find contact "${target}" in the share panel`)
@@ -2707,11 +2808,17 @@ class DouyinService {
         const field = fields[0]?.node
         if (!field) return false
         field.focus()
-        if ('value' in field) field.value = caption
+        if ('value' in field) {
+          const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+            || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
+          if (nativeSetter) nativeSetter.call(field, caption)
+          else field.value = caption
+          field.dispatchEvent(new Event('input', { bubbles: true }))
+        }
         else {
           if (!document.execCommand('insertText', false, caption)) field.textContent = caption
+          field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: caption }))
         }
-        field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: caption }))
         return true
       })()`).catch(() => false)
       await sleep(300)
@@ -2755,7 +2862,7 @@ class DouyinService {
   }
 
   async sendVideoShareTask(name, task) {
-    // 自动发视频已暂时禁用（2026-08-12）
+    // 网页版抖音不支持发送视频卡片（仅手机 App 支持），此功能已停用
     return { ok: false, reason: 'disabled' }
     if (!name) throw new Error('Contact name cannot be empty')
     const state = this.storage.get()
@@ -2780,7 +2887,7 @@ class DouyinService {
   }
 
   async processVideoShareTask(sparks, index, task, now, blacklist, canSend) {
-    return // 自动发视频已暂时禁用（2026-08-12）
+    return // 网页版抖音不支持发送视频卡片，此功能已停用
     const today = localDateKey(now)
     const previousState = freshVideoShareState(task.videoShareState, today)
     const maxPerDay = videoShareDailyLimit(task)
@@ -2828,7 +2935,7 @@ class DouyinService {
   }
 
   async processContactVideoShareTasks(contacts, now, blacklist, canSend) {
-    return // 自动发视频已暂时禁用（2026-08-12）
+    return // 网页版抖音不支持发送视频卡片，此功能已停用
     let changed = false
     const today = localDateKey(now)
     for (let index = 0; index < contacts.length; index += 1) {
@@ -2836,6 +2943,8 @@ class DouyinService {
       const config = contact?.profile?.videoShare || {}
       if (!config.enabled) continue
       if (blacklist.has(contact.name)) continue
+      // 用行为池推断该联系人的兴趣标签（每天最多一次），作为发现视频的分类依据
+      try { await this.inferContactVideoShareTags(contact) } catch (_) { /* 推断失败不影响发送 */ }
       const task = {
         id: `contact-video-share:${contact.name}`,
         name: contact.name,
@@ -2900,6 +3009,57 @@ class DouyinService {
       this.storage.update({ contacts })
       this.emitEvent('contacts', { contacts })
     }
+  }
+
+  // 主动搭话：活跃时段内随机挑一位联系人，AI 结合其行为池（长期记忆 + 兴趣 + 最近聊天）生成自然话题主动发送。
+  // 低频限流：每日总量、最小间隔、每联系人每天最多 1 条；黑名单/禁 AI 名单跳过。
+  async processProactiveChats(now, blacklist, aiDisabledContacts) {
+    const config = this.storage.get().settings?.proactiveChat || {}
+    if (!config.enabled) return
+    const today = localDateKey(now)
+    const minutesNow = now.getHours() * 60 + now.getMinutes()
+    const start = timeToMinutes(config.windowStart || '10:00')
+    const end = timeToMinutes(config.windowEnd || '22:00')
+    if (minutesNow < start || minutesNow > end) return
+
+    let pstate = this.storage.get().proactiveState || { date: '', sentToday: 0, lastSentAt: 0, sentContacts: [] }
+    if (pstate.date !== today) pstate = { date: today, sentToday: 0, lastSentAt: 0, sentContacts: [] }
+    const maxPerDay = Math.max(1, Math.floor(Number(config.maxPerDay) || 2))
+    if (pstate.sentToday >= maxPerDay) return
+    const minIntervalMs = Math.max(60, Math.floor(Number(config.minIntervalMinutes) || 180)) * 60 * 1000
+    if (pstate.lastSentAt && Date.now() - pstate.lastSentAt < minIntervalMs) return
+
+    const contacts = this.storage.get().contacts || []
+    const sentContacts = new Set(Array.isArray(pstate.sentContacts) ? pstate.sentContacts : [])
+    // 候选：未被黑名单/禁 AI 屏蔽、今天还没主动发过、且今天没有过任何发送记录的联系人
+    const candidates = contacts.filter((contact) => {
+      if (!contact?.name) return false
+      if (blacklist.has(contact.name) || aiDisabledContacts.has(contact.name)) return false
+      if (sentContacts.has(contact.name)) return false
+      if (this.hasSentConversationToday(contact.name, now)) return false
+      return true
+    })
+    if (!candidates.length) return
+    // 随机挑一位，模拟“突然想起谁”
+    const contact = candidates[Math.floor(Math.random() * candidates.length)]
+    if (!this.ai?.draftProactiveMessage) return
+    let text = ''
+    let aiMeta = {}
+    try {
+      const draft = await this.ai.draftProactiveMessage({ contact })
+      if (draft?.ok && draft.text) {
+        text = String(draft.text).trim()
+        aiMeta = { source: 'proactive', ai: true, model: draft.model || '', provider: draft.provider || '', aiLabel: draft.aiLabel || 'AI' }
+      }
+    } catch (error) {
+      this.log('ai_proactive_fallback', `${contact.name} 的主动搭话文案生成失败`, { name: contact.name, error: error.message })
+    }
+    if (!text) return
+    await this.sendMessage(contact.name, text, aiMeta)
+    const sentToday = pstate.sentToday + 1
+    const nextState = { date: today, sentToday, lastSentAt: Date.now(), sentContacts: [...sentContacts, contact.name].slice(-100) }
+    this.storage.update({ proactiveState: nextState })
+    this.log('proactive_sent', `已主动与 ${contact.name} 搭话`, { name: contact.name, text, sentToday, maxPerDay })
   }
 
   async isLastMessageFromMe(name) {
@@ -3142,9 +3302,10 @@ class DouyinService {
       const muted = start === end || (start < end ? current >= start && current < end : current >= start || current < end)
       if (muted) return
     }
-    const hasContactVideoShares = false // 自动发视频已暂时禁用（2026-08-12）
+    const hasContactVideoShares = false // 网页版抖音不支持发送视频卡片，此功能已停用
+    const hasProactiveChat = Boolean(settings.proactiveChat?.enabled)
     const hasPendingInquiries = (config.inquiries || []).some((item) => item?.status === 'waiting')
-    const hasWork = Boolean((config.autoReply && !config.paused) || (config.sparks || []).some((task) => task.enabled) || hasContactVideoShares || hasPendingInquiries)
+    const hasWork = Boolean((config.autoReply && !config.paused) || (config.sparks || []).some((task) => task.enabled) || hasContactVideoShares || hasPendingInquiries || hasProactiveChat)
     if (!hasWork) return
     const status = await this.getStatus()
     if (!status.connected) return
@@ -3460,6 +3621,8 @@ class DouyinService {
         }
       }
       await this.processContactVideoShareTasks([...(this.storage.get().contacts || [])], now, blacklist, canSend)
+      // 主动搭话：活跃时段内低频随机挑人主动聊（用行为池生成自然话题）
+      try { await this.processProactiveChats(now, blacklist, aiDisabledContacts) } catch (error) { this.log('proactive_error', `主动搭话执行失败`, { error: error.message }) }
       // 长期记忆提炼（功能D）：本轮最多提炼 3 位联系人的长期记忆，避免拖慢轮询
       for (const candidate of factCandidates.slice(0, 3)) {
         if (!candidate?.name) continue

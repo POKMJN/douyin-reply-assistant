@@ -117,7 +117,7 @@ function cleanGeneratedText(value) {
   const raw = String(value || '').replace(/```(?:\w+)?\s*/g, '').replace(/\s+/g, ' ').trim()
   const clean = raw.replace(/^\s*(?:回复|答复|assistant|AI)\s*[:：]\s*/i, '').trim()
   if (/^(?:\[?不回复\]?|不需要回复|无需回复|不回)$/i.test(clean)) return ''
-  return clean.slice(0, 240)
+  return clean.slice(0, 120)
 }
 
 function isNoReplyDecision(value) {
@@ -220,7 +220,7 @@ function buildTurnGuidance(contact, incoming) {
 
   if (hasQuestion) {
     tags.push(asksForAdvice ? '在问看法或建议' : '有明确问题')
-    guidance.push('先直接回应问题本身，再决定要不要补半句态度；不要用另一个问题躲开回答。')
+    guidance.push('先直接回应问题本身，再决定要不要补半句态度；如果答完后想延续，可以自然地追问一个相关的小问题。')
   }
   if (negativeEmotion) {
     tags.push('带负面情绪或吐槽')
@@ -242,7 +242,7 @@ function buildTurnGuidance(contact, incoming) {
     guidance.push('不必强行把话题延长；一个自然反应、半句接话或顺势收住都可以。')
   }
   if (previous?.role === 'me' && /[?？]$/.test(previous.text)) {
-    guidance.push('上一轮账号本人刚问过问题，这一轮优先承接对方的回答，不要立刻再抛一个新问题。')
+    guidance.push('上一轮账号本人刚问过问题，这一轮优先承接对方的回答；如果对方回答了，可以再自然追问一个细节。')
   }
   if (!guidance.length) guidance.push('找出对方最想让你回应的那个点，只做一个主要动作：表态、接梗、共情、回答或轻轻追一句。')
 
@@ -253,11 +253,11 @@ function replyQualityIssues(reply, isVideo = false, allowEmoji = true) {
   const text = String(reply || '').trim()
   const issues = []
   if (!text) return ['回复为空']
-  if ([...text].length > 90) issues.push('明显长于私信短回复')
+  if ([...text].length > 35) issues.push('超过 35 字，明显长于私信短回复')
   if (/^(?:回复|答复|建议)\s*[:：]/i.test(text)) issues.push('带有说明性前缀')
   if (/(?:作为(?:一个)?\s*AI|我理解你的感受|听起来你|感谢你的分享|如果你愿意|有什么我可以帮你)/i.test(text)) issues.push('带客服腔或 AI 腔')
   if (/```|^\s*[-*]\s|^\s*\d+[.)、]\s/m.test(text)) issues.push('使用了 Markdown 或列表')
-  if ((text.match(/[?？]/g) || []).length > 1) issues.push('连续追问')
+  if ((text.match(/[?？]/g) || []).length > 2) issues.push('问句太多，像连环追问')
   if ((text.match(/\p{Extended_Pictographic}/gu) || []).length > 2) issues.push('表情过多')
   if (!allowEmoji && /\p{Extended_Pictographic}/u.test(text)) issues.push('本次不需要使用表情')
   // 视频回复专项检查
@@ -344,10 +344,11 @@ function buildChatPrompt(contact, incoming = '', skills = []) {
 聊天原则：
 - 回复前先在心里判断对方是在分享、提问、吐槽、求共鸣、接梗、邀约，还是只想得到一个简短反应；不要把判断过程写出来。
 - 每次只选一个主要接法：直接回答、明确表态、情绪共振、顺势接梗、轻轻追一句或自然收住。不要一条消息里把这些全做完。
+- 可以自然地提出一个问题来延续话题（比如关心近况、追问对方刚提到的点、顺势开启新话题），让聊天能往下走；但不要一条消息里塞两个以上问题，也不要像查户口一样连环提问。
 - 先接住对方这句话真正想表达的情绪或意思，再像平时聊天一样自然回应。
-- 默认只回 1 条、1 到 2 个短句。能用十几个字说完就不要写成长段；对方说得短，你也说得短。
+- 回复必须简短：默认只回 1 句、5 到 20 个字；最多 2 个短句、绝不超过 30 个字。能用十几个字说完就不要写更多，对方说得短你更要短。宁可少说，不要多说，不要堆形容词和客套话。
 - 用日常口语，允许省略主语、半句话和少量语气词。语气要松弛，但不要刻意堆“哈哈哈”“呀”“呢”“啦”。
-- 不要复述或总结对方原话，不要每次都称呼对方，不要连续追问，也不要强行升华、讲道理或给一串建议。
+- 不要复述或总结对方原话，不要每次都称呼对方，不要连珠炮式追问，也不要强行升华、讲道理或给一串建议。
 - 禁止客服腔和 AI 腔，例如“我理解你的感受”“听起来你……”“感谢你的分享”“如果你愿意”“有什么我可以帮你的”。
 - 除非上下文确实需要，不用完整正式的标点；不要使用 Markdown、引号、括号说明或项目符号。${emojiGuidance(contact)}
 - 不编造共同经历、承诺、时间、地点或事实。不确定时就像真人一样直说“不知道”“不太清楚”。
@@ -380,7 +381,7 @@ function buildVideoPrompt(contact, skills = []) {
   const disclosure = contact?._showAiModelLabel === false ? '实际发送消息不会附加模型名称。' : '实际发送消息会明确标注当前 AI 模型，但正文必须像真人聊天。'
   return `你是账号本人，正在回复熟人的抖音私信。对方发来的是抖音视频/图片/分享卡片。请像真人刚看完一样，先理解内容表达的点，再自然接话。${disclosure}
 回复要求：
-- 只回 1 条、1 到 2 个口语短句，不要写成长评。
+- 回复必须简短：只回 1 句、5 到 20 个字，最多 2 个短句、绝不超过 30 个字。不要写成长评，不要堆细节，点到一个具体的画面或感觉就收。
 - 必须围绕视频里的具体内容接话，提到一个明确的画面、台词、动作、反转或情绪点。不要只输出“这个视频好有趣”“这个好好笑”这种泛泛表达。
 - 从以下角度里选一个作为主要接法：接梗吐槽、共鸣认同、夸一个具体点、分享类似感受、对反转表示意外、或者轻问一个细节。
 - 不要机械复述“视频里有……”，要像朋友随口回应。
@@ -450,6 +451,34 @@ function buildSparkPrompt({ contact = {}, contactMsgs = [], ownerMsgs = [], tone
 - 联系人：${contact?.name || ''}；关系：${profile.relationship || profile.relation || '未填写'}；平时称呼：${profile.call || '无'}；不碰的话题：${profile.boundary || '无'}。
 ${tone && tone !== '自动跟随语境' ? `期望语气风格：${tone}` : ''}
 ${note ? `额外提示：${note}` : ''}${longTermMemoryBlock(learning)}
+
+对方最近的消息：
+${contactMsgsText}
+
+你最近发过的消息（仅用于参考你的说话习惯）：
+${ownerMsgsText}`
+}
+
+// AI 主动搭话：像“突然想起对方”一样自然开启一个话题，用于日常维系关系。
+// 结合对方的长期记忆、兴趣与最近聊天；严格分角色，绝不把本人的回复当对方的。
+function buildProactivePrompt({ contact = {}, contactMsgs = [], ownerMsgs = [], tone = '' } = {}) {
+  const profile = contact?.profile || {}
+  const learning = contact?.learning || {}
+  const contactMsgsText = contactMsgs.length
+    ? contactMsgs.map((item, index) => `${index + 1}. ${item}`).join('\n')
+    : '（暂无）'
+  const ownerMsgsText = ownerMsgs.length
+    ? ownerMsgs.map((item, index) => `${index + 1}. ${item}`).join('\n')
+    : '（暂无）'
+  return `你现在就是账号本人，正在用抖音私信和一位熟人保持联系。你想主动给对方发一条消息，像突然想到对方、想分享点什么或关心一下，顺其自然地聊起来——而不是打卡式问候。不要机械地说“在吗”“续火花”“打卡”“今天怎么样”这类套话，也不要每次都发一模一样的句子。
+
+要求：
+- 从对方的长期记忆、最近聊过的话题或兴趣爱好里，挑一个自然的切入点开场：可以是一句关心、一个正好想到的小事、一个对方可能感兴趣的轻松话题，或顺势接住对方最近提到的事。
+- 语气严格按你对这位联系人的说话习惯（见【你最近发过的消息】）来写，保持你们一贯的亲密度；不要突然陌生、客套或过分热情。
+- 只输出 1 条消息、1 到 2 个短句，口语化，不要 Markdown、引号、列表，不要堆砌 emoji。
+- 注意区分：下面【你最近发过的消息】是你（账号本人）自己发的，【对方最近的消息】是对方发的；千万不要把自己的话当成对方的话。
+- 联系人：${contact?.name || ''}；关系：${profile.relationship || profile.relation || '未填写'}；平时称呼：${profile.call || '无'}；不碰的话题：${profile.boundary || '无'}。
+${tone && tone !== '自动跟随语境' ? `期望语气风格：${tone}` : ''}${longTermMemoryBlock(learning)}
 
 对方最近的消息：
 ${contactMsgsText}
@@ -838,7 +867,7 @@ class AiService {
           model: provider.model,
           messages: postureMessages,
           temperature: 0.8 + i * 0.08,
-          max_tokens: 100,
+          max_tokens: 60,
         }), { retries: 1, timeoutMs: 14000 })
         const text = cleanGeneratedText(out.choices?.[0]?.message?.content || '')
         if (text) candidates.push({ text, posture: postures[i].label })
@@ -856,7 +885,7 @@ class AiService {
           model: provider.model,
           messages,
           temperature: 0.85,
-          max_tokens: 100,
+          max_tokens: 60,
         }), { retries: 1, timeoutMs: 14000 })
         const text = cleanGeneratedText(out.choices?.[0]?.message?.content || '')
         if (text) candidates.push({ text, posture: '默认' })
@@ -873,14 +902,14 @@ class AiService {
       let score = 0.5 // 基础分
       // 有具体内容指向（不是泛泛而谈）
       if (/这|那|它|你|我/.test(text) && text.length > 6) score += 0.1
-      // 长度合适（8-45 字）
+      // 长度合适（5-28 字，偏短更接近真人私信）
       const len = [...text].length
-      if (len >= 8 && len <= 45) score += 0.15
-      else if (len > 45) score -= 0.1
+      if (len >= 5 && len <= 28) score += 0.15
+      else if (len > 35) score -= 0.15
       // 不是 AI 腔
       if (!/作为(?:一个)?\s*AI|我理解你的感受|听起来你|感谢你的分享/i.test(text)) score += 0.1
-      // 不是连续追问
-      if ((text.match(/[?？]/g) || []).length <= 1) score += 0.05
+      // 不是连环追问（允许最多两个问句）
+      if ((text.match(/[?？]/g) || []).length <= 2) score += 0.05
       // 有具体语气词或态度词，更像真人
       if (/哈|啊|呀|啦|吧|嘛|诶|欸|哦|噢|啧|哎|唔|噗|淦|绝|牛|顶|笑死|离谱|逆天|救命|好家伙|真的假的|不是吧|我天|我的天|哎哟|哎呦/.test(text)) score += 0.1
       // 不是以"这个""这""那个"开头
@@ -950,7 +979,7 @@ class AiService {
       for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
-        out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature: 0.85, max_tokens: 120 }), { retries: 1, timeoutMs: 18000 })
+        out = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature: 0.85, max_tokens: 60 }), { retries: 1, timeoutMs: 18000 })
         if (!out.choices?.[0]?.message?.content) throw new Error('模型接口已响应，但没有返回有效的回复内容')
         provider = candidate
         break
@@ -979,7 +1008,7 @@ class AiService {
           { role: 'assistant', content: text },
           { role: 'user', content: `上一条候选回复有这些问题：${initialQualityIssues.join('、')}。请保留原意和已知事实，改成更像熟人私信的一条自然短回复。评论只作为背景信息，禁止提到评论区、热评、网友或“看到评论”。${emojiGuidance(contactWithTone)}不要新增事实，不要解释，只输出改写后的正文。` },
         ]
-        const revised = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 80 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await requestJson(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 50 }), { retries: 1, timeoutMs: 12000 })
         const revisedText = cleanGeneratedText(revised.choices?.[0]?.message?.content)
         if (revisedText && replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).length < initialQualityIssues.length) {
           text = revisedText
@@ -1053,6 +1082,30 @@ class AiService {
     return { ok: true, text, model: result.model, provider: result.provider, aiLabel: result.aiLabel, elapsedMs: Date.now() - started }
   }
 
+  // 主动搭话：从行为池（近期聊天 + 长期记忆 + 说话风格）生成一条自然的主动开场消息。
+  // 生成时不附加【AI · 模型】前缀，保持消息像本人自然发出。
+  async draftProactiveMessage({ contact, messages } = {}) {
+    const started = Date.now()
+    const config = this.storage.get()
+    const providers = config.providers || []
+    if (!providers.length) throw new Error('请先配置可用模型')
+    const profile = contact?.profile || {}
+    const learning = contact?.learning || {}
+    const recent = normalizeLearnedMessages(Array.isArray(messages) && messages.length ? messages : learning?.messages).slice(-12)
+    const contactMsgs = recent.filter((item) => item.role === 'contact').map((item) => item.text).slice(-6)
+    const ownerMsgs = recent.filter((item) => item.role === 'me').map((item) => item.text).slice(-4)
+    const tone = profile.tone || config.appearance?.defaultTone || ''
+    const instruction = buildProactivePrompt({ contact, contactMsgs, ownerMsgs, tone })
+    const result = await this.inquiryCompletion([
+      { role: 'system', content: instruction },
+      { role: 'user', content: '现在请生成一条主动发给对方的自然消息。' },
+    ], { temperature: 0.85, maxTokens: 80 })
+    const text = cleanGeneratedText(result.text || '')
+    if (!text) throw new Error('AI 没有生成有效的主动搭话消息')
+    this.storage.addLog({ type: 'ai_proactive_draft', message: `已为 ${contact?.name || '联系人'} 生成主动搭话文案`, detail: { elapsedMs: Date.now() - started, model: result.model, provider: result.provider } })
+    return { ok: true, text, model: result.model, provider: result.provider, aiLabel: result.aiLabel, elapsedMs: Date.now() - started }
+  }
+
   // 长期记忆：从近期对话中提炼可长期记住的、已确认的对方信息（工作、学业、家庭、身体、兴趣、规划等），
   // 写入 contact.learning.facts，供后续自动回复 / 续火花时自然引用。
   async mineFacts({ name, messages = [], existing = [] } = {}) {
@@ -1076,5 +1129,33 @@ class AiService {
     }
     return { ok: true, facts }
   }
+
+  // 行为池 → 兴趣标签：从对方的近期消息、说话风格与长期记忆中分析对方可能感兴趣的
+  // 视频分类，返回匹配 VIDEO_SHARE_CATEGORIES 的标签（最多 3 个）。只做推断，不臆造事实。
+  async inferVideoShareCategories({ contact = {}, categories = [] } = {}) {
+    const list = Array.isArray(categories) && categories.length ? categories : []
+    if (!list.length) return { ok: true, categories: [] }
+    const learning = contact?.learning || {}
+    const contactMsgs = normalizeLearnedMessages(learning?.messages)
+      .filter((item) => item.role === 'contact')
+      .map((item) => item.text)
+      .slice(-12)
+    const facts = (Array.isArray(learning?.facts) ? learning.facts : []).map((item) => String(item?.text || '')).filter(Boolean)
+    const profile = contact?.profile || {}
+    if (!contactMsgs.length && !facts.length && !String(profile.personality || '').trim()) return { ok: true, categories: [] }
+    const transcript = [
+      ...contactMsgs.map((text) => `对方：${text}`),
+      ...facts.map((text) => `已知：${text}`),
+      String(profile.personality || ''),
+    ].join('\n').slice(0, 1200)
+    const result = await this.inquiryCompletion([
+      { role: 'system', content: `根据以下某位联系人的聊天记录与已知信息，推断他/她可能感兴趣的视频类型。只能从给出的候选分类中选择，最多选 3 个；不要编造候选之外的分类。用逗号分隔输出，只输出分类名，不要解释。候选分类：${list.join('、')}` },
+      { role: 'user', content: transcript },
+    ], { temperature: 0.2, maxTokens: 40 })
+    const matched = String(result.text || '').split(/[,，、\n]+/)
+      .map((item) => item.trim())
+      .filter((item) => list.includes(item))
+    return { ok: true, categories: [...new Set(matched)].slice(0, 3) }
+  }
 }
-module.exports = { AiService, aiLabel, analyzeLanguageStyle, buildChatMessages, buildChatPrompt, buildLearningProfile, buildMediaAnalysisPrompt, buildSkillsBlock, buildSparkPrompt, buildTurnGuidance, buildVideoPrompt, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, isNoReplyDecision, labelAiReply, mediaCaptureSummary, normalizeLearnedMessages, normalizeSkills, normalizeVideoFrames, normalizeVideoInput, parseSkillsImport, replyQualityIssues, timeContext }
+module.exports = { AiService, aiLabel, analyzeLanguageStyle, buildChatMessages, buildChatPrompt, buildLearningProfile, buildMediaAnalysisPrompt, buildProactivePrompt, buildSkillsBlock, buildSparkPrompt, buildTurnGuidance, buildVideoPrompt, buildVideoSharePrompt, cleanGeneratedText, incomingTimeContext, isNoReplyDecision, labelAiReply, mediaCaptureSummary, normalizeLearnedMessages, normalizeSkills, normalizeVideoFrames, normalizeVideoInput, parseSkillsImport, replyQualityIssues, timeContext }

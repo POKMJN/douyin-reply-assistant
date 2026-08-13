@@ -81,7 +81,7 @@
   height: 22px;
   border-radius: 11px;
   background: #c9d0d7;
-  transition: background 160ms ease;
+  transition: background var(--dur-fast) var(--ease-out);
 }
 
 .master-switch > span::after {
@@ -94,7 +94,7 @@
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 4px #17212b33;
-  transition: transform 160ms ease;
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 
 .master-switch input:checked + span {
@@ -647,6 +647,8 @@
 /* 2026 polish pass: clearer workflow, steadier controls, small state motion */
 :root {
   --ease-out: cubic-bezier(.2,.8,.2,1);
+  --dur-fast: 150ms;   /* 快速反馈：按钮 hover/开关/chip */
+  --dur: 180ms;        /* 标准过渡：面板/行/输入框 */
   --soft-line: color-mix(in srgb, var(--line) 74%, transparent);
   --control-shadow: 0 10px 24px #26384912;
 }
@@ -676,7 +678,7 @@ body {
   position: relative;
   min-height: 44px;
   overflow: hidden;
-  transition: background 180ms var(--ease-out), color 180ms var(--ease-out), transform 180ms var(--ease-out);
+  transition: background var(--dur) var(--ease-out), color var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 
 .nav button::before {
@@ -690,7 +692,7 @@ body {
   background: var(--accent);
   opacity: 0;
   transform: translateX(-5px);
-  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+  transition: opacity var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 
 .nav button:hover {
@@ -714,7 +716,7 @@ body {
   gap: 7px;
   font-weight: 620;
   letter-spacing: 0;
-  transition: transform 150ms var(--ease-out), box-shadow 150ms var(--ease-out), background 150ms var(--ease-out), border-color 150ms var(--ease-out), opacity 150ms var(--ease-out);
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
 }
 
 .btn:hover:not(:disabled) {
@@ -780,7 +782,7 @@ body {
   min-height: 38px;
   padding: 0 8px;
   border-radius: 8px;
-  transition: background 180ms var(--ease-out);
+  transition: background var(--dur) var(--ease-out);
 }
 
 .master-switch:hover {
@@ -821,7 +823,7 @@ body {
   position: relative;
   border-radius: 8px;
   border-bottom: 0;
-  transition: background 150ms var(--ease-out), transform 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+  transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 
 .contact-row::after {
@@ -852,7 +854,7 @@ body {
   position: relative;
   overflow: hidden;
   min-height: 34px;
-  transition: background 170ms var(--ease-out), border-color 170ms var(--ease-out), color 170ms var(--ease-out), transform 170ms var(--ease-out);
+  transition: background var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out), color var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 
 .ai-switch:hover {
@@ -901,7 +903,7 @@ body {
   min-height: 36px;
   border-radius: 7px;
   border-bottom: 0;
-  transition: background 170ms var(--ease-out), color 170ms var(--ease-out), transform 170ms var(--ease-out);
+  transition: background var(--dur) var(--ease-out), color var(--dur) var(--ease-out), transform var(--dur) var(--ease-out);
 }
 
 .tabs button.active {
@@ -1010,7 +1012,7 @@ body {
   background: #fff;
   color: var(--ink);
   cursor: pointer;
-  transition: transform 150ms var(--ease-out), border-color 150ms var(--ease-out), background 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+  transition: transform var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
 
 .video-category-chip span {
@@ -1035,7 +1037,7 @@ body {
   border-color: color-mix(in srgb, var(--mint) 45%, var(--line));
   background: color-mix(in srgb, var(--mint) 10%, #fff);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mint) 12%, transparent);
-  animation: chipPop 180ms var(--ease-out);
+  animation: chipPop var(--dur) var(--ease-out);
 }
 
 .video-category-chip.active span {
@@ -1051,7 +1053,7 @@ body {
   border-radius: 999px;
   background: #c9d0d7;
   cursor: pointer;
-  transition: background 170ms var(--ease-out), box-shadow 170ms var(--ease-out);
+  transition: background var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out);
 }
 
 .setting-row input[type=checkbox]::after {
@@ -1064,7 +1066,7 @@ body {
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 4px #17212b33;
-  transition: transform 170ms var(--ease-out);
+  transition: transform var(--dur) var(--ease-out);
 }
 
 .setting-row input[type=checkbox]:checked {
@@ -1095,7 +1097,7 @@ body {
 .setting-textarea textarea,
 .settings-times input,
 .tone-setting input {
-  transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out), background 150ms var(--ease-out);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
 
 .form input:hover,
@@ -1110,7 +1112,7 @@ body {
 }
 
 .row {
-  transition: background 150ms var(--ease-out), transform 150ms var(--ease-out);
+  transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
 
 .row:hover {
@@ -1308,10 +1310,10 @@ body {
 .btn {
   transition:
     transform 180ms var(--ease-spring),
-    box-shadow 180ms ease,
-    background 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease;
+    box-shadow var(--dur) var(--ease-out),
+    background var(--dur) var(--ease-out),
+    border-color var(--dur) var(--ease-out),
+    color var(--dur) var(--ease-out);
 }
 
 .nav button {
@@ -1437,7 +1439,7 @@ select {
   background: var(--input-bg);
   border-color: rgba(65, 19, 7, .18);
   color: var(--ink);
-  transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
 
 input:hover,
@@ -1463,7 +1465,7 @@ select:focus {
 
 .switch::after {
   box-shadow: 0 3px 8px rgba(65, 19, 7, .2);
-  transition: transform 180ms var(--ease-spring), background 180ms ease;
+  transition: transform 180ms var(--ease-spring), background var(--dur) var(--ease-out);
 }
 
 .switch.on {
@@ -1609,7 +1611,15 @@ select:focus {
 .app.quiet-render .spark-row,
 .app.quiet-render .rule-row,
 .app.quiet-render .settings-section,
-.app.quiet-render .profile-group {
+.app.quiet-render .profile-group,
+.app.quiet-render .contact-row.selected,
+.app.quiet-render .row.selected,
+.app.quiet-render .tabs button.active,
+.app.quiet-render .nav button.active,
+.app.quiet-render .video-category-chip.active,
+.app.quiet-render .notice,
+.app.quiet-render .toast,
+.app.quiet-render .activity-bar[data-tone="busy"] {
   animation: none !important;
   animation-delay: 0ms !important;
 }

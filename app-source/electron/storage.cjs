@@ -10,6 +10,7 @@ const defaults = {
   logs: [],
   sendHistory: [],
   pendingDrafts: [],
+  proactiveState: { date: '', sentToday: 0, lastSentAt: 0, sentContacts: [] },
   appearance: { theme: 'auto', fontSize: 'medium', accentColor: '#0067c0', backgroundColor: '#eef2f5', motion: 'standard', blur: false, defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
@@ -18,6 +19,7 @@ const defaults = {
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard', multiCandidateReply: true,
     saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false, failoverEnabled: true,
     longTermMemory: true,
+    proactiveChat: { enabled: false, maxPerDay: 2, windowStart: '10:00', windowEnd: '22:00', minIntervalMinutes: 180 },
   },
 }
 

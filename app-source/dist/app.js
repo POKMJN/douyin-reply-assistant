@@ -12,6 +12,8 @@ const defaults = {
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
     videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard',
     saveLogs: true, logRetention: '30', showAiModelLabel: true, failoverEnabled: true, blur: false,
+    longTermMemory: true,
+    proactiveChat: { enabled: false, maxPerDay: 2, windowStart: '10:00', windowEnd: '22:00', minIntervalMinutes: 180 },
   },
 }
 
@@ -285,6 +287,10 @@ function settingsView() {
       <label class="setting-row"><span><strong>AI 自动回复</strong><small>全局开启后，联系人页仍可单独禁用某个人的 AI 回复</small></span><input type="checkbox" data-automation-setting="autoReply" ${automationChecked('autoReply')} /></label>
       <label class="setting-row"><span><strong>AI 回复先拟草稿</strong><small>AI 生成的回复不直接发送，进入「AI 草稿」列表由你确认或修改后再手动发送</small></span><input type="checkbox" data-setting="aiReplyDraftOnly" ${checked('aiReplyDraftOnly')} /></label>
       <label class="setting-row"><span><strong>长期记忆</strong><small>自动从对话中提炼对方的重要事实（工作、家人、兴趣等），回复与续火花时自然引用</small></span><input type="checkbox" data-setting="longTermMemory" ${checked('longTermMemory')} /></label>
+      <label class="setting-row"><span><strong>主动搭话</strong><small>活跃时段内随机挑一位联系人，AI 结合其行为池主动发起一段自然话题（低频）</small></span><input type="checkbox" data-proactive-setting="enabled" ${(s.proactiveChat?.enabled) ? 'checked' : ''} /></label>
+      <div class="cols settings-times"><label>活跃开始<input type="time" data-proactive-setting="windowStart" value="${esc(s.proactiveChat?.windowStart || '10:00')}" /></label><label>活跃结束<input type="time" data-proactive-setting="windowEnd" value="${esc(s.proactiveChat?.windowEnd || '22:00')}" /></label></div>
+      <label class="setting-field"><span><strong>每天最多主动搭话</strong><small>全局上限，每天最多主动发几条（建议 1~3 条）</small></span><input class="setting-number" type="number" min="1" max="10" step="1" data-proactive-setting="maxPerDay" value="${Number(s.proactiveChat?.maxPerDay ?? 2)}" /></label>
+      <label class="setting-field"><span><strong>两次搭话最小间隔</strong><small>分钟数，避免短时间内连续主动发消息</small></span><input class="setting-number" type="number" min="60" max="1440" step="30" data-proactive-setting="minIntervalMinutes" value="${Number(s.proactiveChat?.minIntervalMinutes ?? 180)}" /></label>
       <label class="setting-row"><span><strong>临时暂停自动回复</strong><small>暂停期间不会消耗对方新消息，恢复后仍可处理</small></span><input type="checkbox" data-automation-setting="paused" ${automationChecked('paused')} /></label>
       <label class="setting-field"><span><strong>每日发送上限</strong><small>限制自动回复、续火花和视频分享的当日总发送量</small></span><input class="setting-number" type="number" min="1" max="500" step="1" data-automation-setting="dailyLimit" value="${Number(a.dailyLimit ?? 30)}" /></label>
       <label class="setting-row"><span><strong>自动学习联系人</strong><small>生成回复前读取近期对话，改善语气匹配</small></span><input type="checkbox" data-setting="autoLearnContacts" ${checked('autoLearnContacts')} /></label>
@@ -360,6 +366,17 @@ function bindSettings() {
       if (key === 'videoRecognitionEnabled') nextSettings.videoReplyEnabled = value
       await save({ settings: nextSettings }, '设置已保存')
       if (key === 'blur') applyAppearance()
+    }
+  })
+  // 主动搭话（proactiveChat 是 settings 下的嵌套对象，单独处理）
+  document.querySelectorAll('[data-proactive-setting]').forEach((control) => {
+    control.onchange = async () => {
+      const key = control.dataset.proactiveSetting
+      const raw = control.type === 'checkbox' ? control.checked : control.value
+      const value = (key === 'maxPerDay' || key === 'minIntervalMinutes') ? Number(raw) : raw
+      const prev = { ...(defaults.settings.proactiveChat), ...(state.data.settings?.proactiveChat || {}) }
+      const proactiveChat = { ...prev, [key]: value }
+      await save({ settings: { ...defaults.settings, ...(state.data.settings || {}), proactiveChat } }, '主动搭话设置已保存')
     }
   })
   document.querySelector('[data-clear-logs]')?.addEventListener('click', async () => {
@@ -764,6 +781,10 @@ const LOG_LABELS = {
   ai_spark_fallback: ['AI 续火花回退', 'warn'],
   ai_draft_pending: ['AI 草稿待确认', 'warn'],
   ai_facts_mined: ['长期记忆已更新', 'ok'],
+  ai_proactive_draft: ['主动搭话文案', 'ok'],
+  ai_proactive_fallback: ['主动搭话生成失败', 'warn'],
+  proactive_sent: ['主动搭话已发送', 'ok'],
+  proactive_error: ['主动搭话执行失败', 'error'],
   worker_watchdog: ['任务执行超时', 'error'],
   video_captured: ['已捕获视频', 'ok'],
   video_unreadable: ['视频不可读', 'warn'],
@@ -773,6 +794,7 @@ const LOG_LABELS = {
   video_public_context_ready: ['公开上下文就绪', 'ok'],
   video_share_sent: ['视频分享已发送', 'ok'],
   video_share_failed: ['视频分享失败', 'error'],
+  video_share_inferred: ['行为池推断兴趣', 'ok'],
   video_share_caption_fallback: ['视频文案回退', 'warn'],
   video_share_discovery_fallback: ['视频发现回退', 'warn'],
   video_hook_debug: ['视频钩子调试', 'warn'],
@@ -997,38 +1019,6 @@ function bindContacts() {
   const profileButton = document.querySelector('[data-save-profile]')
   if (profileButton) profileButton.onclick = async () => {
     const contact = state.data.contacts.find((item) => item.name === profileButton.dataset.saveProfile)
-    const previousShare = contact.profile?.videoShare || {}
-    const categories = [...document.querySelectorAll('[data-video-share-category].active')]
-      .map((button) => button.dataset.videoShareCategory)
-      .filter(Boolean)
-    const discoveryQuery = document.getElementById('p-video-share-query')?.value || ''
-    const videoList = document.getElementById('p-video-share-list')?.value || ''
-    const videos = normalizeVideoShareItems({ message: videoList })
-    const videoShare = {
-      ...previousShare,
-      enabled: Boolean(document.getElementById('p-video-share-enabled')?.checked),
-      windowStart: document.getElementById('p-video-share-start')?.value || '12:00',
-      windowEnd: document.getElementById('p-video-share-end')?.value || '22:30',
-      maxPerDay: Math.max(1, Math.min(10, Number(document.getElementById('p-video-share-max')?.value || 3))),
-      discoveryMode: 'auto',
-      categories,
-      discoveryQuery,
-      videoList,
-      videos,
-    }
-    const scheduleChanged = previousShare.enabled !== videoShare.enabled
-      || previousShare.windowStart !== videoShare.windowStart
-      || previousShare.windowEnd !== videoShare.windowEnd
-      || previousShare.maxPerDay !== videoShare.maxPerDay
-      || JSON.stringify(normalizeVideoShareCategories(previousShare.categories)) !== JSON.stringify(videoShare.categories)
-      || (previousShare.discoveryQuery || '') !== videoShare.discoveryQuery
-      || (previousShare.videoList || '') !== videoShare.videoList
-    if (scheduleChanged) {
-      videoShare.nextRunAt = ''
-      videoShare.lastAttemptAt = 0
-      videoShare.videoShareState = undefined
-      videoShare.lastRunDate = ''
-    }
     contact.profile = {
       ...(contact.profile || {}),
       call: document.getElementById('p-call').value,
@@ -1039,7 +1029,6 @@ function bindContacts() {
       frequency: document.getElementById('p-frequency')?.value || 'instant',
       tone: document.getElementById('p-tone')?.value || '',
       examples: document.getElementById('p-examples').value.split(/\n+/).map((item) => item.trim()).filter(Boolean),
-      videoShare,
     }
     await save({ contacts: state.data.contacts }, '联系人设置已保存')
   }
