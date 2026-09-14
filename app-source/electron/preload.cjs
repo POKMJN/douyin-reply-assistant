@@ -12,18 +12,33 @@ contextBridge.exposeInMainWorld('desktopApp', {
     learnContact: (name) => ipcRenderer.invoke('douyin:learn-contact', name),
     sendMessage: (name, text) => ipcRenderer.invoke('douyin:send-message', { name, text }),
     sendTask: (name, task) => ipcRenderer.invoke('douyin:send-task', { name, task }),
-    startInquiry: (name, question) => ipcRenderer.invoke('douyin:start-inquiry', { name, question }),
   },
   automation: {
     getState: () => ipcRenderer.invoke('automation:get-state'),
     update: (config) => ipcRenderer.invoke('automation:update', config),
   },
+  accounts: {
+    list: () => ipcRenderer.invoke('accounts:list'),
+    add: () => ipcRenderer.invoke('accounts:add'),
+    switch: (accountId) => ipcRenderer.invoke('accounts:switch', accountId),
+    rename: (accountId, name) => ipcRenderer.invoke('accounts:rename', { accountId, name }),
+    logout: (accountId) => ipcRenderer.invoke('accounts:logout', accountId),
+    wipe: (accountId) => ipcRenderer.invoke('accounts:wipe', accountId),
+    activeState: () => ipcRenderer.invoke('accounts:active-state'),
+    onChanged: (listener) => {
+      const handler = (_event, payload) => listener(payload)
+      ipcRenderer.on('account:changed', handler)
+      return () => ipcRenderer.removeListener('account:changed', handler)
+    },
+  },
   ai: {
     saveProvider: (provider) => ipcRenderer.invoke('ai:save-provider', provider),
-    deleteProvider: (index) => ipcRenderer.invoke('ai:delete-provider', index),
-    setPrimaryProvider: (index) => ipcRenderer.invoke('ai:set-primary-provider', index),
+    deleteProvider: (name) => ipcRenderer.invoke('ai:delete-provider', name),
+    setPrimaryProvider: (name) => ipcRenderer.invoke('ai:set-primary-provider', name),
     testProvider: (index) => ipcRenderer.invoke('ai:test-provider', index),
     draft: (payload) => ipcRenderer.invoke('ai:draft', payload),
+    draftSpark: (payload) => ipcRenderer.invoke('ai:draft-spark', payload),
+    trainLearn: (payload) => ipcRenderer.invoke('train:learn', payload),
     getSkills: () => ipcRenderer.invoke('ai:get-skills'),
     saveSkills: (skills) => ipcRenderer.invoke('ai:save-skills', skills),
     importSkills: (rawText) => ipcRenderer.invoke('ai:import-skills', rawText),

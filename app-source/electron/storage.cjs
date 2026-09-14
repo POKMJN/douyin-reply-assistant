@@ -1,171 +1,143 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+// v2 数据模型。相对 v0.7.x 的变化：
+// - 移除：话题库(topicPool)、话题代问(inquiries)、视频分享(videoShare)、远程面板配置、
+//   外观自定义（字号/强调色/背景色/动效/模糊）——均属死代码或性能负担。
+// - 新增：contacts[].turn（轮次状态机持久化状态）、learning.mediaLog（视频上下文权重层）。
+// - 旧字段在 read() 迁移时剥离，联系人学习数据（messages/facts/topicLog/styleMessages）完整保留。
 const defaults = {
-  automation: { autoReply: false, paused: false, rules: [], sparks: [], inquiries: [], dailyLimit: 30, blacklist: [], aiDisabledContacts: [] },
+  version: 2,
+  automation: { autoReply: false, paused: false, sparks: [], dailyLimit: 30, maxPerContactDaily: 12, blacklist: [], aiDisabledContacts: [] },
   contacts: [],
   providers: [],
   aiSkills: [],
-  profiles: [],
   logs: [],
   sendHistory: [],
   pendingDrafts: [],
   proactiveState: { date: '', sentToday: 0, lastSentAt: 0, sentContacts: [] },
-  appearance: { theme: 'auto', fontSize: 'medium', accentColor: '#0067c0', backgroundColor: '#eef2f5', motion: 'standard', blur: false, defaultTone: '' },
+  lastSeenPairs: [],
+  lastSentPairs: [],
+  appearance: { theme: 'auto', defaultTone: '' },
   settings: {
     launchOnStartup: false, startMinimized: false, minimizeToTray: true, confirmBeforeSend: true,
     desktopNotifications: true, soundNotifications: false, notifyOnSuccess: true, notifyOnFailure: true,
     autoLearnContacts: true, refreshInterval: '5', quietHours: false, quietStart: '23:00', quietEnd: '07:00',
-    videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionStrength: 'standard', multiCandidateReply: true,
+    // 媒体识别（沿用旧字段名，automation 层零改动复用）
+    videoReplyEnabled: true, videoRecognitionEnabled: true, videoLowConfidenceReply: true, videoAnalysisFirst: true, videoRecognitionMode: 'smart',
+    // v2 默认关闭多候选：单候选 + 一次自然化重写足够，减少一半 API 调用与延迟
+    multiCandidateReply: false,
+    // 双消息（允许而非必须）：每次回复按此概率补一条更短的随口话；0 = 关闭
+    twoMessageChance: 0.35,
+    // 续火花"今日播报"天气城市（留空按 IP 自动定位）
+    weatherCity: '',
     saveLogs: true, logRetention: '30', showAiModelLabel: true, aiReplyDraftOnly: false, failoverEnabled: true,
     longTermMemory: true,
-    proactiveChat: { enabled: false, maxPerDay: 2, windowStart: '10:00', windowEnd: '22:00', minIntervalMinutes: 180 },
+    proactiveChat: { enabled: false, maxPerDay: 2, windowStart: '10:00', windowEnd: '22:00', minIntervalMinutes: 180, sendToDraft: false },
   },
 }
 
-const normalizeVideoShareItems = (task) => {
-  const raw = Array.isArray(task?.videos) && task.videos.length
-    ? task.videos
-    : String(task?.videoList || task?.message || '').split(/\r?\n/)
-  return raw.map((item) => {
-    if (typeof item === 'string') {
-      const text = item.trim()
-      const url = (text.match(/https?:\/\/\S+/i) || [''])[0].replace(/[，,。.;；]+$/, '')
-      const withoutUrl = url ? text.replace(url, '') : text
-      const parts = withoutUrl.split(/\s*(?:\||｜| - | -- |：|:)\s*/).map((part) => part.trim()).filter(Boolean)
-      return { url, title: parts[0] || '', note: parts.slice(1).join(' ') || parts[0] || '' }
-    }
-    return {
-      url: String(item?.url || '').trim(),
-      title: String(item?.title || '').trim(),
-      note: String(item?.note || item?.summary || '').trim(),
-    }
-  }).filter((item) => /^https?:\/\//i.test(item.url))
-}
+const emptyTurn = () => ({ lastHandledKey: '', lastOutgoingAt: 0 })
 
-const normalizeVideoShareCategories = (value) => {
-  const raw = Array.isArray(value) ? value : String(value || '').split(/[\r\n,，、;；|]+/)
-  return [...new Set(raw.map((item) => String(item || '').trim()).filter(Boolean))]
-}
-
-const fixLegacyText = (value) => {
-  if (typeof value !== 'string') return value
-  return value
-    .replace(/^Auto reply disabled for (.+)$/u, '已跳过 $1：该联系人已关闭 AI 自动回复')
-    .replace(/^Sent a message to (.+)$/u, '已向 $1 发送消息')
-    .replace(/^Captured media from (.+)$/u, '已捕获 $1 的媒体画面')
-    .replace(/鏄嚜宸卞彂鐨勶紝璺宠繃/g, '是自己发的，跳过')
-    .replace(/浠婂ぉ宸叉湁鍙戦€佽褰曪紝鏈鏃犻渶琛ョ画/g, '今天已有发送记录，本次无需补续')
-}
-
-const fixLegacyLogValue = (value) => {
-  if (typeof value === 'string') return fixLegacyText(value)
-  if (Array.isArray(value)) return value.map(fixLegacyLogValue)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fixLegacyLogValue(item)]))
-  }
-  return value
-}
-
-const fixLegacyLogs = (state) => ({
-  ...state,
-  logs: Array.isArray(state.logs) ? state.logs.map((entry) => fixLegacyLogValue(entry)) : [],
-})
-
-const migrateVideoShareTasks = (state) => {
-  const automation = state.automation || {}
-  const sparks = Array.isArray(automation.sparks) ? automation.sparks : []
-  const contacts = Array.isArray(state.contacts) ? state.contacts : []
-  const byName = new Map(contacts.map((contact) => [contact.name, contact]))
-  const nextSparks = []
-  for (const task of sparks) {
-    if (String(task?.kind || '') !== 'videoShare') {
-      nextSparks.push(task)
-      continue
-    }
-    const contact = byName.get(task.name)
-    if (!contact) continue
-    const profile = { ...(contact.profile || {}) }
-    const existing = profile.videoShare || {}
-    profile.videoShare = {
-      ...existing,
-      enabled: true,
-      windowStart: task.windowStart || task.time || existing.windowStart || '12:00',
-      windowEnd: task.windowEnd || existing.windowEnd || '22:30',
-      maxPerDay: task.maxPerDay || existing.maxPerDay || 3,
-      discoveryMode: task.discoveryMode || existing.discoveryMode || 'auto',
-      categories: normalizeVideoShareCategories(task.categories).length ? normalizeVideoShareCategories(task.categories) : (existing.categories || []),
-      discoveryQuery: task.discoveryQuery || task.keywords || task.topics || existing.discoveryQuery || '',
-      videoList: task.videoList || task.message || existing.videoList || '',
-      videos: normalizeVideoShareItems(task).length ? normalizeVideoShareItems(task) : (existing.videos || []),
-      nextRunAt: task.nextRunAt || existing.nextRunAt || '',
-      lastAttemptAt: task.lastAttemptAt || existing.lastAttemptAt || 0,
-      lastRunDate: task.lastRunDate || existing.lastRunDate || '',
-      videoShareState: task.videoShareState || existing.videoShareState,
-    }
-    byName.set(contact.name, { ...contact, profile })
-  }
+// 联系人规范化：补齐 turn / profile / learning 缺失字段，剥离已下线功能的残留数据
+function normalizeContact(contact) {
+  if (!contact || typeof contact !== 'object' || !contact.name) return null
+  const profile = { ...(contact.profile || {}) }
+  delete profile.videoShare
+  const learning = { ...(contact.learning || {}) }
   return {
-    ...state,
-    contacts: contacts.map((contact) => byName.get(contact.name) || contact),
-    automation: { ...automation, sparks: nextSparks },
+    ...contact,
+    profile,
+    learning: {
+      ...learning,
+      messages: Array.isArray(learning.messages) ? learning.messages : [],
+      topicLog: Array.isArray(learning.topicLog) ? learning.topicLog : [],
+      mediaLog: Array.isArray(learning.mediaLog) ? learning.mediaLog : [],
+      facts: Array.isArray(learning.facts) ? learning.facts : [],
+    },
+    turn: { ...emptyTurn(), ...(contact.turn || {}) },
+  }
+}
+
+// 历史日志净化：旧版本写入的启动消息带内部构建标记，对用户无意义且不该出现在界面
+const cleanLegacyLogValue = (value) => {
+  if (typeof value === 'string') return value.replace(/（重构版[^）]*）/g, '').replace(/rebuild\S*/gi, '').trim()
+  if (Array.isArray(value)) return value.map(cleanLegacyLogValue)
+  if (value && typeof value === 'object') {
+    // build 字段整体删除（内部构建标记，不面向用户）
+    const { build: _build, ...rest } = value
+    return Object.fromEntries(Object.entries(rest).map(([key, item]) => [key, cleanLegacyLogValue(item)]))
+  }
+  return value
+}
+const cleanLegacyLogEntry = (entry) => {
+  if (!entry || typeof entry !== 'object') return entry
+  return cleanLegacyLogValue({ ...entry })
+}
+
+// 迁移：旧版 state.json → v2。宽容读取（旧字段存在即剥离），学习数据原样保留。
+function migrateLegacy(input) {
+  const saved = input && typeof input === 'object' ? input : {}
+  const legacyAutomation = saved.automation || {}
+  const automation = {
+    ...defaults.automation,
+    autoReply: Boolean(legacyAutomation.autoReply),
+    paused: Boolean(legacyAutomation.paused),
+    sparks: Array.isArray(legacyAutomation.sparks)
+      ? legacyAutomation.sparks.filter((task) => task && String(task.kind || 'text') !== 'videoShare' && task.name)
+      : [],
+    dailyLimit: Number(legacyAutomation.dailyLimit) || defaults.automation.dailyLimit,
+    maxPerContactDaily: Number(legacyAutomation.maxPerContactDaily) || defaults.automation.maxPerContactDaily,
+    blacklist: Array.isArray(legacyAutomation.blacklist) ? legacyAutomation.blacklist : [],
+    aiDisabledContacts: Array.isArray(legacyAutomation.aiDisabledContacts) ? legacyAutomation.aiDisabledContacts : [],
+  }
+  const appearance = { theme: saved.appearance?.theme === 'dark' ? 'dark' : (saved.appearance?.theme === 'light' ? 'light' : 'auto'), defaultTone: String(saved.appearance?.defaultTone || '') }
+  const contacts = (Array.isArray(saved.contacts) ? saved.contacts : []).map(normalizeContact).filter(Boolean)
+  return {
+    ...structuredClone(defaults),
+    contacts,
+    providers: Array.isArray(saved.providers) ? saved.providers : [],
+    aiSkills: Array.isArray(saved.aiSkills) ? saved.aiSkills : [],
+    logs: (Array.isArray(saved.logs) ? saved.logs : []).slice(0, 200).map(cleanLegacyLogEntry),
+    sendHistory: Array.isArray(saved.sendHistory) ? saved.sendHistory : [],
+    pendingDrafts: Array.isArray(saved.pendingDrafts) ? saved.pendingDrafts.slice(0, 50) : [],
+    proactiveState: saved.proactiveState && typeof saved.proactiveState === 'object' ? saved.proactiveState : structuredClone(defaults.proactiveState),
+    lastSeenPairs: Array.isArray(saved.lastSeenPairs) ? saved.lastSeenPairs : [],
+    lastSentPairs: Array.isArray(saved.lastSentPairs) ? saved.lastSentPairs : [],
+    appearance,
+    automation,
+    settings: { ...defaults.settings, ...(saved.settings || {}) },
   }
 }
 
 class JsonStorage {
   constructor(userDataPath) {
     this.filePath = path.join(userDataPath, 'state.json')
+    // 启动时滚动备份上一会话状态（保留 2 代）：数据损坏时可回滚
+    this.backupPreviousState()
     this.state = this.read()
+  }
+
+  backupPreviousState() {
+    try {
+      if (!fs.existsSync(this.filePath)) return
+      const dir = path.dirname(this.filePath)
+      const prev = path.join(dir, 'state.prev.json')
+      const prev2 = path.join(dir, 'state.prev2.json')
+      try { if (fs.existsSync(prev)) fs.copyFileSync(prev, prev2) } catch { /* 轮转失败不阻塞启动 */ }
+      try { fs.copyFileSync(this.filePath, prev) } catch { /* 备份失败不阻塞启动 */ }
+    } catch { /* 备份失败不阻塞启动 */ }
   }
 
   read() {
     try {
       const saved = JSON.parse(fs.readFileSync(this.filePath, 'utf8'))
-      const savedAutomation = saved.automation || {}
-      // Older builds accidentally sent all top-level patches through the
-      // automation IPC handler. Fold those fields back into their proper
-      // locations when the app starts so existing data is not lost.
-      const nestedAutomation = savedAutomation.automation || {}
-      const contacts = (saved.contacts && saved.contacts.length)
-        ? saved.contacts
-        : (savedAutomation.contacts || [])
-      const legacyAiDisabledContacts = Array.isArray(savedAutomation.aiDisabledContacts)
-        ? savedAutomation.aiDisabledContacts
-        : (savedAutomation.blacklist || [])
-      const automation = {
-        ...defaults.automation,
-        ...savedAutomation,
-        ...nestedAutomation,
-        aiDisabledContacts: legacyAiDisabledContacts,
-        // Previous builds used blacklist for the per-contact AI switch,
-        // which also blocked spark tasks. The dedicated field fixes that.
-        blacklist: Array.isArray(savedAutomation.aiDisabledContacts) ? (savedAutomation.blacklist || []) : [],
+      if (saved && Number(saved.version) === 2) {
+        // v2 快路径：补齐新增字段后返回
+        const base = migrateLegacy(saved)
+        return base
       }
-      delete automation.contacts
-      delete automation.automation
-      const settings = { ...defaults.settings, ...(saved.settings || {}) }
-      const appearance = { ...defaults.appearance, ...(saved.appearance || {}) }
-      if (appearance.accentColor === '#e95d48' || appearance.accentColor === '#2f7fd8') appearance.accentColor = defaults.appearance.accentColor
-      if (appearance.backgroundColor === '#cdf2ff') {
-        appearance.backgroundColor = appearance.theme === 'dark' ? '#172338' : defaults.appearance.backgroundColor
-      }
-      if (!Object.prototype.hasOwnProperty.call(saved.settings || {}, 'videoRecognitionEnabled')) {
-        settings.videoRecognitionEnabled = settings.videoReplyEnabled !== false
-      }
-      settings.videoReplyEnabled = settings.videoRecognitionEnabled
-      return fixLegacyLogs(migrateVideoShareTasks({
-        ...structuredClone(defaults),
-        ...saved,
-        settings,
-        appearance,
-        contacts,
-        automation,
-        sendHistory: Array.isArray(saved.sendHistory)
-          ? saved.sendHistory
-          : (saved.logs || [])
-            .filter((entry) => entry.type === 'message_sent' && entry.at && entry.detail?.name)
-            .map((entry) => ({ at: entry.at, name: entry.detail.name })),
-      }))
+      return migrateLegacy(saved || {})
     } catch {
       return structuredClone(defaults)
     }
@@ -180,12 +152,11 @@ class JsonStorage {
     const tempPath = `${this.filePath}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-      // 紧凑 JSON 写盘：相比格式化输出可减少约 30% 磁盘量，读写更快
       fs.writeFileSync(tempPath, JSON.stringify(this.state), 'utf8')
       fs.renameSync(tempPath, this.filePath)
     } catch (writeError) {
-      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath) } catch { /* ignore cleanup errors */ }
-      // If the primary path is still readable, keep the old state rather than crashing
+      try { if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath) } catch { /* ignore */ }
+      // 主文件仍可读时保留旧状态，不让写盘失败拖垮运行中的进程
       try { JSON.parse(fs.readFileSync(this.filePath, 'utf8')); return this.get() } catch {}
       throw writeError
     }
@@ -199,9 +170,9 @@ class JsonStorage {
     const cutoff = retentionDays ? Date.now() - (retentionDays * 24 * 60 * 60 * 1000) : 0
     const logs = [{ id: Date.now(), at: new Date().toISOString(), ...entry }, ...(this.state.logs || [])]
       .filter((item) => !cutoff || new Date(item.at).getTime() >= cutoff)
-      .slice(0, 200)
+      .slice(0, 150)
     return this.update({ logs })
   }
 }
 
-module.exports = { JsonStorage }
+module.exports = { JsonStorage, defaults, migrateLegacy, normalizeContact, emptyTurn }
