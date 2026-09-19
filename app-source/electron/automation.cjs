@@ -1,4 +1,4 @@
-const fs = require('node:fs')
+﻿const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const os = require('node:os')
@@ -450,7 +450,7 @@ function mergePublicMediaContext(publicContext = {}, visibleText = '', limit = 5
 
   return {
     videoPageTitle: publicTitle || visibleMeta.videoPageTitle || '',
-    videoPageAuthor: author,
+    videoPageAuthor: author || visibleMeta.videoPageAuthor || visibleAuthorOnly || '',
     videoPageDescription: publicMeta.videoPageDescription || visibleMeta.videoPageDescription || '',
     videoSharedComment: sharedComment,
     videoComments: mergedComments,
@@ -622,6 +622,7 @@ function conversationTimeMeta(contact, now = new Date()) {
 const isVideoPreview = (value) => /(?:\[?视频\]?|发来一个视频|分享(?:了)?视频|分享(?:了)?作品|video|短视频|视频卡片|来自视频|播放|[▶⏵]|\d{1,3}["秒]?\s*$|作品|看这个|你看看|发来了一段)/i.test(String(value || ''))
 const mediaPreviewKind = (value) => {
   const text = String(value || '')
+  if (/暂不支持该消息类型/i.test(text)) return 'unsupported'
   if (isVideoPreview(text)) return 'video'
   if (/(?:\[?媒体\]?|媒体卡片|分享\s*@|来自视频|分享\s*\[?\s*评论\s*\]?|分享(?:了)?评论)/i.test(text)) return 'share'
   if (/(?:\[?图集\]?|分享\[图集\]|相册)/i.test(text)) return 'album'
@@ -647,12 +648,12 @@ const shouldDeferConsumptionOnFromMe = (preview, myLastSentText) => {
   if (/^分享\[|^\[分享/.test(previewText)) return true
   return INCOMING_MEDIA_KINDS.includes(mediaPreviewKind(previewText))
 }
-const pureMediaPreviewPattern = /^(?:\[?\s*(?:视频|媒体|图集|图片|照片|动图|表情|GIF)\s*\]?|分享\s*@?[^\s，,。；;：:]{1,48}\s*的(?:作品|视频|评论)|分享\s*\[?\s*(?:视频|媒体|图集|图片|评论)\s*\]?|分享(?:了)?(?:视频|作品|评论|链接|商品|直播|音乐)|发来一个视频|发来了一段|视频卡片|媒体卡片|来自视频|播放|作品|[▶⏵]|\d{1,3}["秒]?)$/i
+const pureMediaPreviewPattern = /^(?:\[?\s*(?:视频|媒体|图集|图片|照片|动图|表情|GIF)\s*\]?|分享\s*@?[^\s，,。；;：:]{1,48}\s*的(?:作品|视频|评论)|分享\s*\[?\s*(?:视频|媒体|图集|图片|评论)\s*\]?|分享(?:了)?(?:视频|作品|评论|链接|商品|直播|音乐)|发来一个视频|发来了一段|视频卡片|媒体卡片|来自视频|播放|作品|[▶⏵]|\d{1,3}["秒]?|暂不支持该消息类型|\[暂不支持该消息类型\])$/i
 const mediaMarkerPattern = /(?:\[?\s*(?:视频|媒体|图集|图片|照片|动图|表情|GIF)\s*\]?|分享\s*@?[^\s，,。；;：:]{1,48}\s*的(?:作品|视频|评论)|分享\s*\[?\s*(?:视频|媒体|图集|图片|评论)\s*\]?|分享(?:了)?(?:视频|作品|评论|链接|商品|直播|音乐)|发来一个视频|发来了一段|视频卡片|媒体卡片|来自视频|播放|作品|看这个|你看看|[▶⏵]|\d{1,3}["秒]?)/ig
 const hasReplyablePreviewText = (value) => {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
-  if (!text || pureMediaPreviewPattern.test(text)) return false
-  const remainder = text.replace(mediaMarkerPattern, '').replace(/\s+/g, '').trim()
+  if (!text || pureMediaPreviewPattern.test(text) || /暂不支持该消息类型/i.test(text)) return false
+  const remainder = text.replace(mediaMarkerPattern, '').replace(/暂不支持该消息类型/g, '').replace(/\s+/g, '').trim()
   return remainder.length > 0
 }
 
@@ -696,6 +697,8 @@ const normalizeCapturedMedia = (value, hintedKind = '') => {
 const hasPublicMediaContext = (media = {}) => Boolean(
   String(media.videoPageTitle || '').trim()
     || String(media.videoPageDescription || '').trim()
+    || String(media.videoPageAuthor || '').trim()
+    || String(media.videoSharedComment || '').trim()
     || (Array.isArray(media.videoComments) && media.videoComments.length)
 )
 
@@ -722,7 +725,7 @@ function extractConversationPreview(lines, explicitPreview = '', explicitStreak 
 function extractStreakCount(explicitStreak = '', lines = []) {
   const explicit = String(explicitStreak || '').match(/\d+/)
   if (explicit) return Number(explicit[0])
-  const labelled = (Array.isArray(lines) ? lines : []).find((value) => /火花|连续\s*\d+\s*天|^\d+\s*天/.test(String(value)))
+  const labelled = (Array.isArray(lines) ? lines : []).find((value) => /鐏姳|杩炵画\s*\d+\s*澶﹟^\d+\s*澶?/.test(String(value)))
   return Number((String(labelled || '').match(/\d+/) || [0])[0])
 }
 
@@ -863,11 +866,33 @@ class DouyinService {
     const limit = Math.max(0, Math.min(50, Math.floor(Number(options.commentLimit || 0) || 0)))
     if (!limit) return {}
     const hasShareUrl = Boolean(media?.shareUrl)
+    const targetAwemeId = (media?.shareUrl || '').match(/\/video\/(\d+)/)?.[1]
+      || (media?.shareUrl || '').match(/modal_id=(\d+)/)?.[1]
+      || (media?.shareUrl || '').match(/\d{18,20}/)?.[0]
+      || ''
     const win = hasShareUrl ? this.ensureDiscoveryWindow() : sourceWindow
     if (!win) return {}
     try {
       if (hasShareUrl) {
         await win.loadURL(media.shareUrl)
+        // 立即静音并暂停视频播放，防止自动播放完后切到下一个视频
+        await win.webContents.executeJavaScript(`(() => {
+          try {
+            document.querySelectorAll('video').forEach((v) => { v.pause(); v.muted = true })
+          } catch {}
+        })()`).catch(() => {})
+        // 校验加载后的 URL：若被重定向到了无关推荐流（如 /jingxuan 但 modal_id 与目标不符），立即放弃，严禁张冠李戴
+        const loadedUrl = String(win.webContents.getURL() || '')
+        const loadedModalMatch = loadedUrl.match(/modal_id=(\d+)/)?.[1] || loadedUrl.match(/\/video\/(\d+)/)?.[1] || ''
+        if (targetAwemeId && loadedModalMatch && loadedModalMatch !== targetAwemeId) {
+          this.log('video_comments_mismatch', `公开页被重定向到其他推荐视频（目标 ${targetAwemeId} vs 当前 ${loadedModalMatch}），已放弃读取该页`, {
+            name,
+            targetAwemeId,
+            loadedModalMatch,
+            url: loadedUrl.slice(0, 120),
+          })
+          return { videoCommentError: 'video_redirect_mismatch', videoPageUrlFound: true }
+        }
       } else {
         const pageState = await win.webContents.executeJavaScript(`(() => {
           const href = String(location.href || '')
@@ -879,6 +904,12 @@ class DouyinService {
         if (!pageState?.isPublicVideo) return {}
       }
       await sleep(Math.max(1800, Number(options.commentWaitMs || 3000)))
+      // 再次暂停可能自动播放的视频
+      await win.webContents.executeJavaScript(`(() => {
+        try {
+          document.querySelectorAll('video').forEach((v) => { v.pause(); v.muted = true })
+        } catch {}
+      })()`).catch(() => {})
       await win.webContents.executeJavaScript(`(() => {
         const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim()
         const visible = (node) => {
@@ -901,13 +932,26 @@ class DouyinService {
       const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
       for (let index = 0; index < scrolls; index += 1) {
         await sleep(Math.max(450, Math.floor(Number(options.commentWaitMs || 3000) / Math.max(2, scrolls + 1))))
+        // 滚动中检查是否发生切视频
+        const currentAweme = await win.webContents.executeJavaScript(`(() => {
+          try { document.querySelectorAll('video').forEach((v) => { v.pause(); v.muted = true }) } catch {}
+          const m = location.href.match(/modal_id=(\\d+)/) || location.href.match(/\\/video\\/(\\d+)/);
+          return m ? m[1] : '';
+        })()`).catch(() => '')
+        if (targetAwemeId && currentAweme && currentAweme !== targetAwemeId) {
+          this.log('video_comments_mismatch', `滚动中页面切到了其他推荐视频（目标 ${targetAwemeId} vs 当前 ${currentAweme}），已停止读取`, { name, targetAwemeId, currentAweme })
+          return { videoCommentError: 'video_redirect_mismatch', videoPageUrlFound: true }
+        }
         await win.webContents.executeJavaScript(`(() => {
           try {
-            const scrollers = [...document.querySelectorAll('[class*="comment" i], [data-e2e*="comment" i], [role="dialog"], main, body')]
-              .filter((node) => node && node.scrollHeight > node.clientHeight + 50)
+            // 只查找真正的评论列表滚动容器，严禁滚动 main, body, documentElement，防止触发切视频！
+            const scrollers = [...document.querySelectorAll('[class*="comment" i], [data-e2e*="comment" i], [role="dialog"]')]
+              .filter((node) => node && !['MAIN', 'BODY', 'HTML'].includes(node.tagName) && node.scrollHeight > node.clientHeight + 50)
               .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight))
-            const target = scrollers[0] || document.scrollingElement || document.documentElement
-            target.scrollBy(0, Math.max(320, innerHeight * 0.65))
+            const target = scrollers[0]
+            if (target) {
+              target.scrollBy(0, Math.max(320, innerHeight * 0.65))
+            }
           } catch {}
           return true
         })()`).catch(() => false)
@@ -915,6 +959,12 @@ class DouyinService {
       await sleep(Math.max(500, Math.floor(Number(options.commentWaitMs || 3000) / 4)))
       const context = await win.webContents.executeJavaScript(`(async () => {
         const limit = ${JSON.stringify(limit)}
+        const targetAwemeId = ${JSON.stringify(targetAwemeId)}
+        const currentHref = String(location.href || '')
+        const currentId = (currentHref.match(/modal_id=(\\d+)/) || currentHref.match(/\\/video\\/(\\d+)/))?.[1] || ''
+        if (targetAwemeId && currentId && currentId !== targetAwemeId) {
+          return { mismatch: true, targetAwemeId, currentId, href: currentHref }
+        }
         const normalize = (value, max = 500) => String(value || '').replace(/\\s+/g, ' ').trim().slice(0, max)
         const extractPublicCommentItemText = ${extractPublicCommentItemText.toString()}
         const meta = (selector, max = 500) => normalize(document.querySelector(selector)?.content || document.querySelector(selector)?.getAttribute('content') || '', max)
@@ -940,7 +990,7 @@ class DouyinService {
           if (bad.test(text)) continue
           if (title && (text === title || title.includes(text))) continue
           if (description && description.includes(text) && text.length < 12) continue
-          if (/^\\d+$/.test(text) || /^[\\d.万wW]+$/.test(text)) continue
+          if (/^\\d+$/.test(text) || /^\\[\\d.万wW]+$/.test(text)) continue
           if (comments.some((item) => item === text || item.includes(text) || text.includes(item))) continue
           comments.push(text)
           if (comments.length >= limit) break
@@ -958,7 +1008,7 @@ class DouyinService {
             if (text.length < 3 || text.length > 180 || bad.test(text)) continue
             if (title && (text === title || title.includes(text))) continue
             if (description && description.includes(text) && text.length < 12) continue
-            if (/^\\d+$/.test(text) || /^[\\d.万wW]+$/.test(text)) continue
+            if (/^\\d+$/.test(text) || /^\\[\\d.万wW]+$/.test(text)) continue
             if (comments.some((item) => item === text || item.includes(text) || text.includes(item))) continue
             comments.push(text)
             if (comments.length >= limit) break
@@ -968,6 +1018,7 @@ class DouyinService {
         const commentUrls = [...new Set(performance.getEntriesByType('resource')
           .map((entry) => String(entry.name || ''))
           .filter((url) => /aweme\\/v1\\/web\\/comment\\/list\\//i.test(url)))]
+          .filter((url) => !targetAwemeId || url.includes('aweme_id=' + targetAwemeId) || url.includes(targetAwemeId))
         for (const url of commentUrls.slice(-Math.max(2, Math.ceil(limit / 5) + 2))) {
           try {
             const response = await fetch(url, { credentials: 'include' })
@@ -983,6 +1034,15 @@ class DouyinService {
         }
         return { title, description, author, apiComments, comments, source: location.href }
       })()`).catch((error) => ({ error: error.message }))
+      if (context?.mismatch) {
+        this.log('video_comments_mismatch', `公开页内容提取发现视频 ID 不符（目标 ${targetAwemeId} vs 当前 ${context.currentId}），已丢弃无关评论`, {
+          name,
+          targetAwemeId,
+          currentId: context.currentId,
+          href: context.href,
+        })
+        return { videoCommentError: 'video_redirect_mismatch', videoPageUrlFound: true }
+      }
       const normalized = normalizeCommentContext({
         ...context,
         comments: Array.isArray(context?.apiComments) && context.apiComments.length
@@ -1015,7 +1075,7 @@ class DouyinService {
       minWidth: 900,
       minHeight: 620,
       show,
-      title: '抖音账号登录 · 自动回复',
+      title: '鎶栭煶璐﹀彿鐧诲綍 路 缁０',
       autoHideMenuBar: true,
       webPreferences: {
         partition: this.partition,
@@ -1062,10 +1122,6 @@ class DouyinService {
         const found = id[1] || id[2] || id[3] || id[4]
         if (found) {
           this._videoDetailIds.add(found)
-          if (this._videoDetailIds.size > 80) {
-            const firstKey = this._videoDetailIds.values().next().value
-            if (firstKey) this._videoDetailIds.delete(firstKey)
-          }
           if (!this._capturedVideoUrl) this._capturedVideoUrl = 'https://www.douyin.com/video/' + found
           return found
         }
@@ -1112,17 +1168,13 @@ class DouyinService {
         window.__xushengVideoInfo = new Map()
         const collect = (text) => {
           try {
-            if (!text || typeof text !== 'string' || !text.includes('aweme_id')) return
-            const data = JSON.parse(text)
+            const data = JSON.parse(String(text || ''))
             const walk = (value) => {
               if (!value || typeof value !== 'object') return
               if (Array.isArray(value)) { value.forEach(walk); return }
               if (typeof value.aweme_id === 'string' && /^\\d{10,20}$/.test(value.aweme_id)) {
                 const id = value.aweme_id
-                if (!window.__xushengVideoIds.includes(id)) {
-                  window.__xushengVideoIds.push(id)
-                  if (window.__xushengVideoIds.length > 60) window.__xushengVideoIds.shift()
-                }
+                if (!window.__xushengVideoIds.includes(id)) window.__xushengVideoIds.push(id)
                 const shareInfo = value.share_info || value.shareInfo || value.share || {}
                 const author = String(
                   value.author?.nickname
@@ -1160,10 +1212,6 @@ class DouyinService {
                 addCover(value.cover?.url_list)
                 addCover(value.cover_url?.url_list)
                 addCover(value.images?.flatMap?.((image) => image?.url_list || []))
-                if (window.__xushengVideoInfo.size >= 60) {
-                  const oldestKey = window.__xushengVideoInfo.keys().next().value
-                  if (oldestKey) window.__xushengVideoInfo.delete(oldestKey)
-                }
                 window.__xushengVideoInfo.set(id, {
                   desc,
                   author,
@@ -1188,10 +1236,8 @@ class DouyinService {
           if (ArrayBuffer.isView(data)) { try { return new TextDecoder().decode(data.buffer, { stream: true }) } catch {} }
           if (typeof Blob !== 'undefined' && data instanceof Blob) {
             try {
-              // 仅对小体积 Blob 进行文本解码，超大媒体切片 Blob 跳过防止挤占堆内存
-              if (data.size <= 256 * 1024) {
-                data.text().then((t) => collect(t)).catch(() => {})
-              }
+              // 同步拿不到 Blob 内容，异步处理
+              data.text().then((t) => collect(t)).catch(() => {})
               return ''
             } catch {}
           }
@@ -1212,6 +1258,9 @@ class DouyinService {
                 }
                 return originalAddEventListener(type, listener, options)
               }
+              // onmessage 访问器定义在原型上，实例级覆盖不生效，
+              // 因此统一走 addEventListener 捕获；若页面用 onmessage 赋值，
+              // 通过包装原型访问器补捕获。
             } catch {}
             return socket
           }
@@ -1246,12 +1295,8 @@ class DouyinService {
           window.fetch = async (...args) => {
             const response = await originalFetch(...args)
             try {
-              const url = String(args[0]?.url || args[0] || '')
-              // 快速前置过滤：仅对可能含有视频详情/消息/评论的业务接口克隆流，直接放过视频流、静态资源与高频打点
-              if (/(?:aweme|im|message|comment|detail|web\\/v1)/i.test(url)) {
-                const cloned = response.clone()
-                cloned.text().then(collect).catch(() => {})
-              }
+              const cloned = response.clone()
+              cloned.text().then(collect).catch(() => {})
             } catch {}
             return response
           }
@@ -1263,7 +1308,7 @@ class DouyinService {
           return originalOpen.apply(this, args)
         }
         XMLHttpRequest.prototype.send = function (...args) {
-          if (this.__xushengUrl && /(?:aweme|im|message|comment|detail|web\\/v1)/i.test(this.__xushengUrl)) {
+          if (this.__xushengUrl && /douyin\\.com|amemv\\.com/i.test(this.__xushengUrl)) {
             this.addEventListener('load', () => { try { collect(this.responseText) } catch {} })
           }
           return originalSend.apply(this, args)
@@ -1911,7 +1956,7 @@ class DouyinService {
     } else if (media.isVideo) {
       // 视频只采用真实解码出的关键帧（seek 到具体时间点截取）；
       // 不再使用气泡截图和封面 poster —— 封面与视频内容常常不符，据此回复容易编错画面。
-      for (const ratio of (maxFrames > 2 ? [0.2, 0.68] : maxFrames > 1 ? [0.5] : [])) {
+      for (const ratio of (maxFrames > 2 ? [0.2, 0.68] : maxFrames >= 1 ? [0.5] : [])) {
         if (await seek(ratio)) {
           await capture(media.videoRect || media.rect)
           decodedVideoFrames += 1
@@ -2443,10 +2488,10 @@ class DouyinService {
   async sendMessage(name, text, metadata = {}) {
     if (!name || !String(text).trim()) throw new Error('联系人和消息内容不能为空')
     this.assertCanSend(name)
-    // 回复频率节流：按联系人资料里配置的最小发送间隔限制（instant 不限，双消息的跟进短消息豁免）
+    // 回复频率节流：按联系人资料里配置的最小发送间隔限制（instant 不限）
     const freqContact = (this.storage.get().contacts || []).find((item) => item.name === name)
     const freqSeconds = REPLY_FREQUENCY_SECONDS[freqContact?.profile?.frequency] || 0
-    if (freqSeconds > 0 && !metadata.isFollowUp) {
+    if (freqSeconds > 0) {
       const lastAt = this.lastReplyTime.get(name) || 0
       const waitMs = freqSeconds * 1000 - (Date.now() - lastAt)
       if (waitMs > 0) throw new Error(`该联系人设置了回复间隔，请 ${Math.ceil(waitMs / 1000)} 秒后再发送`)
@@ -2744,6 +2789,22 @@ class DouyinService {
         this.lastSeen.set(contact.name, currentMessageKey)
         continue
       }
+      // 回声拦截：若预览文本就是我刚发出的内容（含截断、前缀、AI 标签显现），
+      // 或联系人显式标记为 fromMe，直接更新 lastSeen，绝不入队（防止发送后 5 秒假入队与自我复读循环）
+      const lastSentText = String(this.lastSent.get(contact.name) || '').replace(/\s+/g, ' ').trim()
+      const previewText = String(contact.preview || '').replace(/\s+/g, ' ').trim()
+      const isOutgoingEcho = Boolean(lastSentText) && (
+        previewText === lastSentText
+        || lastSentText.startsWith(previewText)
+        || previewText.startsWith(lastSentText)
+        || (previewText.length >= 8 && lastSentText.includes(previewText))
+        || (previewText.length >= 8 && previewText.includes(lastSentText.slice(0, 15)))
+        || previewText.includes('【AI · ')
+      )
+      if (isOutgoingEcho || contact.fromMe === true) {
+        this.lastSeen.set(contact.name, currentMessageKey)
+        continue
+      }
       if (!autoReplyOn) continue // 主动任务在循环外处理；来消息不被消费，恢复后仍可回复
       const receivedAt = timeMeta.sentAt
       const receivedAtMs = receivedAt ? new Date(receivedAt).getTime() : Number.NaN
@@ -2807,7 +2868,6 @@ class DouyinService {
     let deferred = 0
     let held = 0
     for (const plan of plans) {
-      if (ctx?.isCancelled?.()) break
       if (plan.action === 'hold') { held += 1; continue }
       if (plan.action === 'defer') { deferred += 1; continue }
       const item = plan.item
@@ -2903,7 +2963,15 @@ class DouyinService {
     // 我方回声守卫：预览就是刚发出的内容（或带 AI 标签的回显），绝不再次回复
     const lastSentText = String(this.lastSent.get(contact.name) || '').replace(/\s+/g, ' ').trim()
     const previewText = String(contact.preview || '').replace(/\s+/g, ' ').trim()
-    if (lastSentText && (previewText === lastSentText || previewText.startsWith(lastSentText) || previewText.includes('【AI · '))) {
+    const isEcho = Boolean(lastSentText) && (
+      previewText === lastSentText
+      || lastSentText.startsWith(previewText)
+      || previewText.startsWith(lastSentText)
+      || (previewText.length >= 8 && lastSentText.includes(previewText))
+      || (previewText.length >= 8 && previewText.includes(lastSentText.slice(0, 15)))
+      || previewText.includes('【AI · ')
+    )
+    if (isEcho) {
       this.markIncomingConsumed(item)
       return 'consumed'
     }
@@ -3052,6 +3120,7 @@ class DouyinService {
         if (aiAttempted) await sleep(humanReplyDelay(replyText))
         await this.sendMessage(contact.name, replyText, aiMeta)
         this.aiBackoff.delete(contact.name)
+        this.lastSent.set(contact.name, replyText)
         this.lastSeen.set(contact.name, currentMessageKey)
         this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey, lastOutgoingAt: Date.now() }))
         // 双消息（允许而非必须）：模型补了第二条随口话时紧跟发出；独立容错，
@@ -3060,7 +3129,8 @@ class DouyinService {
         if (followUp) {
           try {
             await sleep(humanReplyDelay(followUp))
-            await this.sendMessage(contact.name, followUp, { ...aiMeta, isFollowUp: true })
+            await this.sendMessage(contact.name, followUp, aiMeta)
+            this.lastSent.set(contact.name, followUp)
           } catch (followError) {
             this.log('send_error', `第二条消息发送失败（首条已送达，不影响本轮）`, { name: contact.name, error: followError.message })
           }
@@ -3093,87 +3163,12 @@ class DouyinService {
     return defer('ai_unavailable', 60 * 1000)
   }
 
-  // 内存卫生：聊天页是常驻重型 SPA，渲染进程会累积数百 MB。
-  // 每 3 分钟及每轮任务结束进入空闲时检查一次：
-  // 1. 达到内存超标线（Working Set >= 450MB 或 JS堆 >= 160MB）
-  // 2. 连续常驻达到 45 分钟生命周期上限（Proactive Lifecycle Recycling）
-  // 满足上述任一条件且当前空闲无待发消息时，优雅重建渲染进程（OS 彻底回收 400~700MB 物理内存）。
-  // 未达重建条件时，每 5 分钟在页面上下文进行一次轻量显存与缓存清洁。
+  // 内存卫生：聊天页是常驻重型 SPA，渲染进程会累积数百 MB。每 10 分钟检查一次，
+  // 空闲且超阈值时重建渲染进程（destroy 让进程退出、OS 立即回收内存），下次轮询按需重建。
   startMemoryHygiene() {
     if (this._memoryTimer) return
     this._pageLoadedAt = Date.now()
-    this._memoryTimer = setInterval(() => { this.runMemoryHygiene().catch(() => {}) }, 3 * 60 * 1000)
-  }
-
-  // 内部集合生命周期淘汰：防止 lastSkipNotice, _videoDetailIds, aiBackoff, lastLimitNotice 随运行天数无限膨胀
-  cleanupInternalMaps() {
-    const now = Date.now()
-    if (this.lastSkipNotice instanceof Map) {
-      if (this.lastSkipNotice.size > 120) {
-        for (const [k, v] of this.lastSkipNotice.entries()) {
-          if (now - v > 30 * 60 * 1000 || this.lastSkipNotice.size > 80) {
-            this.lastSkipNotice.delete(k)
-          }
-        }
-      }
-    }
-    if (this._videoDetailIds instanceof Set && this._videoDetailIds.size > 80) {
-      const excess = this._videoDetailIds.size - 80
-      const it = this._videoDetailIds.values()
-      for (let i = 0; i < excess; i++) {
-        this._videoDetailIds.delete(it.next().value)
-      }
-    }
-    if (this.aiBackoff instanceof Map) {
-      for (const [k, v] of this.aiBackoff.entries()) {
-        if (now >= v) this.aiBackoff.delete(k)
-      }
-    }
-    if (this.lastLimitNotice instanceof Map) {
-      for (const [k, v] of this.lastLimitNotice.entries()) {
-        if (now - v > 24 * 60 * 60 * 1000) this.lastLimitNotice.delete(k)
-      }
-    }
-    if (this.lastReplyTime instanceof Map) {
-      for (const [k, v] of this.lastReplyTime.entries()) {
-        if (now - v > 24 * 60 * 60 * 1000) this.lastReplyTime.delete(k)
-      }
-    }
-  }
-
-  // 页面内轻量清洁（不销毁窗口）：释放已暂停视频的显存，限制页面内元数据缓存
-  async runInPageCleanup(win) {
-    if (!win || win.isDestroyed?.() || win.webContents?.isLoading?.()) return
-    try {
-      await win.webContents.executeJavaScript(`(() => {
-        try {
-          if (window.__xushengVideoIds && window.__xushengVideoIds.length > 30) {
-            window.__xushengVideoIds = window.__xushengVideoIds.slice(-30)
-          }
-          if (window.__xushengVideoInfo && window.__xushengVideoInfo.size > 30) {
-            const excess = window.__xushengVideoInfo.size - 30
-            const it = window.__xushengVideoInfo.keys()
-            for (let i = 0; i < excess; i++) {
-              const k = it.next().value
-              if (k) window.__xushengVideoInfo.delete(k)
-            }
-          }
-          const mediaEls = document.querySelectorAll('video, audio')
-          for (const el of mediaEls) {
-            if (el.paused && (!el.offsetParent || el.getBoundingClientRect().height === 0)) {
-              el.removeAttribute('src')
-              el.load()
-            }
-          }
-          if (typeof window.gc === 'function') window.gc()
-        } catch {}
-      })()`).catch(() => {})
-    } catch {}
-    try {
-      const el = require('electron')
-      const ses = el?.session?.fromPartition?.(this.partition)
-      ses?.clearCodeCaches?.({}).catch?.(() => {})
-    } catch {}
+    this._memoryTimer = setInterval(() => { this.runMemoryHygiene().catch(() => {}) }, 10 * 60 * 1000)
   }
 
   // 读取聊天页渲染进程内存（MB）。注意：Electron 37 起 getAppMetrics 只在 app 上
@@ -3200,61 +3195,32 @@ class DouyinService {
   }
 
   async runMemoryHygiene() {
-    this.cleanupInternalMaps()
     if (this.polling || this.verificationActive) return
     const win = this.window
     if (!win || win.isDestroyed()) return
     if (win.webContents.isLoading()) return
-    // 待发送队列非空、或用户正在前台交互时，绝不打断
-    if (this.incomingQueue instanceof Map && this.incomingQueue.size > 0) return
-    if (win.isVisible()) return
-
-    const now = Date.now()
-    const uptimeMin = Math.round((now - (this._pageLoadedAt || now)) / 60000)
+    const uptimeMin = Math.round((Date.now() - (this._pageLoadedAt || Date.now())) / 60000)
     const { memMB, source } = await this.readChatPageMemoryMB(win)
-
-    // 触发条件（精准双轨治理）：
-    // 1. 内存硬超标：常驻内存达到 450MB（或 JS 堆 160MB）且已加载 10 分钟以上
-    const overMem = source === 'jsHeap' ? memMB >= 160 : memMB >= 450
-    // 2. 存活轮转上限：运行达到 45 分钟且当前处于完全空闲，主动轮转以彻底释放累积的 DOM、显存与垃圾
-    const maxUptimeReached = uptimeMin >= 45
-
-    if (!((overMem && uptimeMin >= 10) || maxUptimeReached)) {
-      // 未达到彻底重建标准时，每 5 分钟执行一次免重载页内轻量显存与缓存清洁
-      if (now - (this._lastInPageCleanupAt || 0) >= 5 * 60 * 1000) {
-        this._lastInPageCleanupAt = now
-        await this.runInPageCleanup(win).catch(() => {})
-      }
-      return
-    }
-
-    const reason = overMem
-      ? `常驻内存偏高 ${memMB}MB（${source}）/ 已运行 ${uptimeMin} 分钟`
-      : `已连续常驻 ${uptimeMin} 分钟达到轮转周期`
-    this.log('memory_hygiene', `抖音聊天页${reason}，重建渲染进程彻底释放内存`, { memMB, source, uptimeMin })
-    await this.recycleChatWindow()
+    // 触发条件（防泄漏护栏）：聊天页常驻内存异常偏高才重建。实测抖音聊天页自身固有占用
+    // 就有 300-600MB，重载并不能降低这部分、反而会瞬时冲高，因此阈值必须高于正常水位，
+    // 只在疑似泄漏（持续增长到 800MB 以上）时才回收。RSS 与 JS 堆两套口径分别设阈。
+    const overMem = source === 'jsHeap' ? memMB >= 250 : memMB >= 800
+    if (!(overMem && uptimeMin >= 10)) return
+    this.log('memory_hygiene', `聊天页内存 ${memMB}MB（${source}）/ 已加载 ${uptimeMin} 分钟，疑似异常增长，重建渲染进程释放内存`, { memMB, source, uptimeMin })
+    this.recycleChatWindow()
   }
 
-  // 重建聊天页：destroy 让渲染进程彻底退出（OS 回收内存），清空 Chromium 会话缓存，下次轮询按需重建
-  async recycleChatWindow() {
+  // 重建聊天页：destroy 让渲染进程彻底退出（OS 回收内存），下次轮询按需重建
+  recycleChatWindow() {
     const win = this.window
-    if (!win || win.isDestroyed()) return
-    // 前台保护：用户正在操作登录窗口时不强制销毁
-    if (win.isVisible()) return
     this.window = null
     this._pageLoadedAt = Date.now()
     try {
-      win.__forceClose = true
-      win.destroy()
-    } catch { /* 销毁失败不阻塞自动化 */ }
-    try {
-      const el = require('electron')
-      const ses = el?.session?.fromPartition?.(this.partition)
-      if (ses) {
-        await ses.clearCache().catch(() => {})
-        await ses.clearCodeCaches({}).catch(() => {})
+      if (win && !win.isDestroyed()) {
+        win.__forceClose = true
+        win.destroy()
       }
-    } catch {}
+    } catch { /* 销毁失败不阻塞自动化 */ }
     try { if (typeof global.gc === 'function') global.gc() } catch { /* 主进程堆回收（需 --expose-gc） */ }
   }
 
@@ -3303,34 +3269,26 @@ class DouyinService {
       }
       if (challenged) return
     } catch { /* 检测失败不阻塞本轮 */ }
-    // 看门狗与轮次令牌：超时作废本轮令牌，避免卡死超时后与下一轮并发运行造成 DOM 冲突
-    const runToken = Symbol('runAutomation')
-    this._currentRunToken = runToken
-    const isCancelled = () => this._currentRunToken !== runToken
-
+    // 看门狗：页面 executeJavaScript 卡死会让本轮无限挂起，整轮超 5 分钟强制中止
     const watchdog = setTimeout(() => {
       this.log('worker_watchdog', '自动回复本轮执行超时，已强制跳过本轮', { detail: '页面可能卡死' })
-      if (this._currentRunToken === runToken) this._currentRunToken = null
       this.polling = false
     }, 5 * 60 * 1000)
     this.polling = true
     try {
       const { contacts } = await this.syncContacts()
-      if (isCancelled()) return
       const today = localDateKey()
       const blacklist = new Set((config.blacklist || []).map((name) => String(name).trim()).filter(Boolean))
       const aiDisabledContacts = new Set((config.aiDisabledContacts || []).map((name) => String(name).trim()).filter(Boolean))
       const canSend = (name) => !blacklist.has(name) && this.getSendAllowance(name).ok
       const factCandidates = []
       const topicCandidates = []
-      const ctx = { config, settings, contacts, today, autoReplyOn, blacklist, aiDisabledContacts, canSend, factCandidates, topicCandidates, isCancelled }
+      const ctx = { config, settings, contacts, today, autoReplyOn, blacklist, aiDisabledContacts, canSend, factCandidates, topicCandidates }
 
       // ① 收集：只发现、只入队，不做任何回复动作
       await this.collectIncoming(contacts, ctx)
-      if (isCancelled()) return
       // ② 规划 + ③ 执行：先统一判定，再严格串行处理（同一时刻只有一个 AI 调用和一次发送）
       await this.drainIncomingQueue(ctx)
-      if (isCancelled()) return
 
       const seenArr = [...this.lastSeen].map(([n, p]) => ({ name: n, preview: p, at: Date.now() }))
       if (this.storage?.update) this.storage.update({ lastSeenPairs: seenArr })
@@ -3400,10 +3358,7 @@ class DouyinService {
       }
     } finally {
       clearTimeout(watchdog)
-      if (this._currentRunToken === runToken) this._currentRunToken = null
       this.polling = false
-      // 每轮任务结束进入空闲时，顺带检测一次内存卫生（此时无锁、无待发任务，是安全回收的最佳时机）
-      this.runMemoryHygiene().catch(() => {})
     }
   }
 
@@ -3428,6 +3383,4 @@ class DouyinService {
     }
     if (this.discoveryWindow && !this.discoveryWindow.isDestroyed()) this.discoveryWindow.destroy()
   }
-}
-
-module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions }
+}module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions }

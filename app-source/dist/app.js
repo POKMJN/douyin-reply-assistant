@@ -136,30 +136,12 @@ function render() {
 // 数据补丁：后台事件只刷新动态区域，绝不触碰表单
 let dynamicTimer = null
 function queueDynamic() {
-  if (document.hidden) {
-    // 窗口最小化到托盘处于隐藏状态时，数据已在 S.data 中更新，暂缓 DOM 重绘以消除渲染进程无谓的 CPU 与内存垃圾
-    S._needsDynamicRefresh = true
-    return
-  }
   if (dynamicTimer) return
   dynamicTimer = setTimeout(() => {
     dynamicTimer = null
     refreshDynamic()
   }, 300)
 }
-
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && S._needsDynamicRefresh) {
-    S._needsDynamicRefresh = false
-    refreshDynamic()
-  }
-})
-window.addEventListener('focus', () => {
-  if (S._needsDynamicRefresh) {
-    S._needsDynamicRefresh = false
-    refreshDynamic()
-  }
-})
 
 function refreshDynamic() {
   if (!S.data) return
@@ -665,14 +647,14 @@ function settingsView() {
         <div class="field"><label>视频回复</label><select data-path="settings.videoReplyEnabled">
           <option value="on" ${st.videoReplyEnabled !== false ? 'selected' : ''}>开启</option><option value="off" ${st.videoReplyEnabled === false ? 'selected' : ''}>关闭</option>
         </select></div>
-        <div class="field"><label>天气城市（如：成都、北京，建议手动指定）</label><input data-path="settings.weatherCity" value="${esc(st.weatherCity || '')}" placeholder="建议填写，避免代理网络定位偏至境外" /></div>
+        <div class="field"><label>天气城市（续火花今日播报，留空自动定位）</label><input data-path="settings.weatherCity" value="${esc(st.weatherCity || '')}" placeholder="如：成都" /></div>
         <div class="field"><label>识别模式</label><select data-path="settings.videoRecognitionMode">
           <option value="smart" ${st.videoRecognitionMode !== 'comments' && st.videoRecognitionMode !== 'lite' ? 'selected' : ''}>智能（先理解再回复）</option>
           <option value="comments" ${st.videoRecognitionMode === 'comments' ? 'selected' : ''}>轻量（仅文案与评论）</option>
           <option value="lite" ${st.videoRecognitionMode === 'lite' ? 'selected' : ''}>极简（仅文字）</option>
         </select></div>
       </div>
-      <div class="muted" style="margin-top:8px">智能模式会截取关键帧 + 转写音频 + 读取公开页文案。若使用代理/VPN，自动定位天气可能偏至境外节点，建议在上方明确填写所在城市。</div>
+      <div class="muted" style="margin-top:8px">智能模式会截取关键帧 + 转写音频 + 读取公开页文案，理解结果会作为后续对话的上下文背景保留（视频上下文）。</div>
     </div>
     <div class="panel">
       <h3>学习与记忆</h3>
@@ -725,7 +707,7 @@ function settingsView() {
     <div class="panel">
       <h3>关于</h3>
       <div class="muted">
-        抖音回复助手 v${esc(S.info?.version || '')} · Electron ${esc(S.info?.electron || '')}<br/>
+        抖音回复助手 v${esc(S.info?.version || '')} · Electron ${esc(S.info?.version || '')}<br/>
         AI 回复由你自配的 OpenAI 兼容接口提供；所有数据保存在本机。<br/>
         <button class="btn small" data-act="check-update" style="margin-top:8px">检查更新</button>
       </div>

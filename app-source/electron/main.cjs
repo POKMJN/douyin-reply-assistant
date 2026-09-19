@@ -51,12 +51,6 @@ app.commandLine.appendSwitch('autoplay-policy', 'user-gesture-required')
 // 允许主进程调用 global.gc()：内存卫生重建渲染进程后主动触发一次堆回收
 app.commandLine.appendSwitch('js-flags', '--expose-gc')
 
-// 限制 Chromium 缓存与图形内存占用（长效后台运行防内存居高不下）
-app.commandLine.appendSwitch('disk-cache-size', '33554432') // 磁盘缓存上限 32MB，防止缓存索引无限占内存
-app.commandLine.appendSwitch('media-cache-size', '16777216') // 媒体缓存上限 16MB
-app.commandLine.appendSwitch('disable-gpu-shader-disk-cache') // 关闭 GPU 着色器磁盘缓存，减少内存映射
-app.commandLine.appendSwitch('enable-features', 'TrimOnMemoryPressure') // 内存压力时主动削减 Working Set
-
 function imageOrFallback(...names) {
   for (const name of names) {
     const image = nativeImage.createFromPath(assetPath(name))
@@ -113,12 +107,6 @@ function createWindow() {
       mainWindow.hide()
     }
   })
-  mainWindow.on('hide', () => {
-    try {
-      mainWindow?.webContents?.session?.clearCache?.().catch?.(() => {})
-      if (typeof global.gc === 'function') global.gc()
-    } catch {}
-  })
 }
 
 function applySystemSettings(settings = {}) {
@@ -167,7 +155,6 @@ function createTray() {
 ipcMain.handle('app:info', () => ({
   name: '抖音回复助手',
   version: app.getVersion(),
-  electron: process.versions.electron,
   platform: process.platform,
 }))
 
@@ -500,22 +487,6 @@ app.whenReady().then(() => {
   registerAiHandlers()
   createWindow()
   createTray()
-  // 全局长期驻留内存维护节拍（每 15 分钟）：清空 Chromium 默认与各账号网络/代码缓存，触发 V8 堆垃圾回收
-  setInterval(async () => {
-    try {
-      await session.defaultSession?.clearCache?.().catch?.(() => {})
-      await session.defaultSession?.clearCodeCaches?.({}).catch?.(() => {})
-      for (const entry of services.values()) {
-        const p = entry?.douyin?.partition
-        if (p) {
-          const s = session.fromPartition(p)
-          await s.clearCache?.().catch?.(() => {})
-          await s.clearCodeCaches?.({}).catch?.(() => {})
-        }
-      }
-    } catch {}
-    try { if (typeof global.gc === 'function') global.gc() } catch {}
-  }, 15 * 60 * 1000)
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus() }
     else createWindow()

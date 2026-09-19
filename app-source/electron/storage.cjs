@@ -144,7 +144,7 @@ class JsonStorage {
   }
 
   get() {
-    return { ...this.state }
+    return structuredClone(this.state)
   }
 
   update(patch) {

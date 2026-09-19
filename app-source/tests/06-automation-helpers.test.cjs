@@ -1,13 +1,13 @@
 // 自动化模块纯函数测试（automation.cjs 剪裁后仍完好）
 const { test } = require('node:test')
 const assert = require('node:assert')
-require('../lib/setup.cjs')
+require('./setup.cjs')
 const {
   computePollDelay, humanReplyDelay, mergeMessageHistory, dailySparkMessage,
   resolveSparkTask, mediaPreviewKind, hasReplyablePreviewText, isUnavailableMediaReply,
   shouldDeferConsumptionOnFromMe, conversationTimeMeta, normalizeCapturedMedia,
-  hasPublicMediaContext, extractConversationPreview, extractStreakCount,
-} = require('../lib/app.cjs')('electron/automation.cjs')
+  hasPublicMediaContext, extractConversationPreview,
+} = require('../electron/automation.cjs')
 
 test('computePollDelay：空闲越久越慢，且钳制在 5s-300s', () => {
   const base = 5000
@@ -78,6 +78,8 @@ test('normalizeCapturedMedia / hasPublicMediaContext', () => {
   assert.equal(media.frames.length, 1)
   assert.equal(media.detectedVideo, true)
   assert.equal(hasPublicMediaContext({ videoPageTitle: '标题' }), true)
+  assert.equal(hasPublicMediaContext({ videoPageAuthor: '创作者' }), true)
+  assert.equal(hasPublicMediaContext({ videoSharedComment: '推荐理由' }), true)
   assert.equal(hasPublicMediaContext({}), false)
 })
 
@@ -85,12 +87,4 @@ test('extractConversationPreview：剔除时间与火花计数行', () => {
   const preview = extractConversationPreview(['小明', '12', '你好呀', '刚刚'])
   assert.ok(preview.includes('你好呀'))
   assert.ok(!preview.includes('刚刚'))
-})
-
-test('extractStreakCount：提取火花/连续天数', () => {
-  assert.equal(extractStreakCount('15', []), 15)
-  assert.equal(extractStreakCount('', ['小明', '连续 32 天', '好的']), 32)
-  assert.equal(extractStreakCount('', ['火花 99 天']), 99)
-  assert.equal(extractStreakCount('', ['5天', '早安']), 5)
-  assert.equal(extractStreakCount('', ['纯文本']), 0)
 })
