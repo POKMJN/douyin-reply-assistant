@@ -38,6 +38,9 @@ const S = {
   noticeTimer: null,
   logFilter: { type: '', keyword: '' },
   providerEditing: null, // null 关闭；-1 新建；>=0 编辑
+  modelOptions: [], // 拉取到的模型 ID 候选（仅当前表单，不落库）
+  modelFetchMsg: '', // 拉取状态提示文案
+  basePreviewTimer: null,
   sparkEditing: null, // null 关闭；'new' 新建
   lastDraftsCount: -1,
   train: { name: '', log: [], draft: null, lastIncoming: '' },
@@ -126,17 +129,37 @@ function render() {
       </div>
     </div>`
   restoreScrolls()
+  // 模型表单打开时，重算一次接口地址预览（render 会重建 DOM）
+  if (document.getElementById('pv-base')) refreshBasePreview()
 }
 
 // 数据补丁：后台事件只刷新动态区域，绝不触碰表单
 let dynamicTimer = null
 function queueDynamic() {
+  if (document.hidden) {
+    // 窗口最小化到托盘处于隐藏状态时，数据已在 S.data 中更新，暂缓 DOM 重绘以消除渲染进程无谓的 CPU 与内存垃圾
+    S._needsDynamicRefresh = true
+    return
+  }
   if (dynamicTimer) return
   dynamicTimer = setTimeout(() => {
     dynamicTimer = null
     refreshDynamic()
   }, 300)
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && S._needsDynamicRefresh) {
+    S._needsDynamicRefresh = false
+    refreshDynamic()
+  }
+})
+window.addEventListener('focus', () => {
+  if (S._needsDynamicRefresh) {
+    S._needsDynamicRefresh = false
+    refreshDynamic()
+  }
+})
 
 function refreshDynamic() {
   if (!S.data) return
@@ -426,9 +449,17 @@ function providerForm() {
     <h3>${S.providerEditing >= 0 ? `编辑：${esc(p.name || '')}` : '添加模型接口'}</h3>
     <div class="grid2">
       <div class="field"><label>名称</label><input id="pv-name" value="${esc(p.name || '')}" placeholder="如：主力模型" /></div>
-      <div class="field"><label>模型 ID</label><input id="pv-model" value="${esc(p.model || '')}" placeholder="如：deepseek-chat" /></div>
-      <div class="field"><label>接口地址</label><input id="pv-base" value="${esc(p.baseUrl || '')}" placeholder="https://api.xxx.com/v1" /></div>
-      <div class="field"><label>API Key（留空保持不变）</label><input id="pv-key" type="password" value="" /></div>
+      <div class="field"><label>接口地址</label><input id="pv-base" value="${esc(p.baseUrl || '')}" placeholder="如：https://api.deepseek.com/v1" />
+        <div class="muted" id="pv-base-preview"></div></div>
+      <div class="field"><label>API Key（留空保持不变）</label><input id="pv-key" type="password" value="" placeholder="sk-..." /></div>
+      <div class="field"><label>模型 ID</label>
+        <div class="row" style="gap:6px">
+          <input id="pv-model" list="pv-model-list" value="${esc(p.model || '')}" placeholder="填好地址和 Key 后点右侧获取，或手动填写" style="flex:1" />
+          <button class="btn small" data-act="provider-fetch-models">获取模型列表</button>
+        </div>
+        <datalist id="pv-model-list">${(S.modelOptions || []).map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+        <div class="muted" id="pv-model-status">${esc(S.modelFetchMsg || '')}</div>
+      </div>
       <div class="field"><label>能力</label><label class="check"><input type="checkbox" id="pv-vision" ${((p.capabilities || []).includes('vision')) ? 'checked' : ''}/> 支持图片/视频识别</label></div>
       <div class="field"><label>音频转写模型（可选）</label><input id="pv-trans" value="${esc(p.transcriptionModel || '')}" placeholder="whisper-1" /></div>
     </div>
@@ -437,6 +468,46 @@ function providerForm() {
       <button class="btn" data-act="provider-cancel">取消</button>
     </div>
   </div>`
+}
+
+// 接口地址实时预览：调用主进程同一套归一化逻辑，显示最终会请求的地址
+async function refreshBasePreview() {
+  const input = document.getElementById('pv-base')
+  const box = document.getElementById('pv-base-preview')
+  if (!input || !box) return
+  const value = input.value.trim()
+  if (!value) { box.textContent = ''; box.className = 'muted'; return }
+  try {
+    const result = await api.ai.normalizeBaseUrl(value)
+    if (result?.ok) {
+      box.textContent = `实际请求地址：${result.baseUrl}/chat/completions`
+      box.className = 'muted ok'
+    } else {
+      box.textContent = result?.message || '接口地址格式不正确'
+      box.className = 'muted err'
+    }
+  } catch {
+    box.textContent = ''
+    box.className = 'muted'
+  }
+}
+
+function queueBasePreview() {
+  clearTimeout(S.basePreviewTimer)
+  S.basePreviewTimer = setTimeout(() => { refreshBasePreview() }, 250)
+}
+
+// 把拉取到的模型 ID 填进 datalist（直接改 DOM，不重渲染，避免丢失已填内容）
+function applyModelOptions(list) {
+  const dl = document.getElementById('pv-model-list')
+  if (dl) dl.innerHTML = (list || []).map((m) => `<option value="${esc(m)}"></option>`).join('')
+}
+
+function setModelStatus(text, kind = '') {
+  const box = document.getElementById('pv-model-status')
+  if (!box) return
+  box.textContent = text || ''
+  box.className = kind ? `muted ${kind}` : 'muted'
 }
 
 function modelsView() {
@@ -594,14 +665,14 @@ function settingsView() {
         <div class="field"><label>视频回复</label><select data-path="settings.videoReplyEnabled">
           <option value="on" ${st.videoReplyEnabled !== false ? 'selected' : ''}>开启</option><option value="off" ${st.videoReplyEnabled === false ? 'selected' : ''}>关闭</option>
         </select></div>
-        <div class="field"><label>天气城市（续火花今日播报，留空自动定位）</label><input data-path="settings.weatherCity" value="${esc(st.weatherCity || '')}" placeholder="如：成都" /></div>
+        <div class="field"><label>天气城市（如：成都、北京，建议手动指定）</label><input data-path="settings.weatherCity" value="${esc(st.weatherCity || '')}" placeholder="建议填写，避免代理网络定位偏至境外" /></div>
         <div class="field"><label>识别模式</label><select data-path="settings.videoRecognitionMode">
           <option value="smart" ${st.videoRecognitionMode !== 'comments' && st.videoRecognitionMode !== 'lite' ? 'selected' : ''}>智能（先理解再回复）</option>
           <option value="comments" ${st.videoRecognitionMode === 'comments' ? 'selected' : ''}>轻量（仅文案与评论）</option>
           <option value="lite" ${st.videoRecognitionMode === 'lite' ? 'selected' : ''}>极简（仅文字）</option>
         </select></div>
       </div>
-      <div class="muted" style="margin-top:8px">智能模式会截取关键帧 + 转写音频 + 读取公开页文案，理解结果会作为后续对话的上下文背景保留（视频上下文）。</div>
+      <div class="muted" style="margin-top:8px">智能模式会截取关键帧 + 转写音频 + 读取公开页文案。若使用代理/VPN，自动定位天气可能偏至境外节点，建议在上方明确填写所在城市。</div>
     </div>
     <div class="panel">
       <h3>学习与记忆</h3>
@@ -654,7 +725,7 @@ function settingsView() {
     <div class="panel">
       <h3>关于</h3>
       <div class="muted">
-        抖音回复助手 v${esc(S.info?.version || '')} · Electron ${esc(S.info?.version || '')}<br/>
+        抖音回复助手 v${esc(S.info?.version || '')} · Electron ${esc(S.info?.electron || '')}<br/>
         AI 回复由你自配的 OpenAI 兼容接口提供；所有数据保存在本机。<br/>
         <button class="btn small" data-act="check-update" style="margin-top:8px">检查更新</button>
       </div>
@@ -822,9 +893,35 @@ const ACTIONS = {
       showNotice(`已向 ${task.name} 发送`)
     })
   },
-  'provider-new'() { S.providerEditing = -1; render() },
-  'provider-cancel'() { S.providerEditing = null; render() },
-  'provider-edit'({ index }) { S.providerEditing = index; render() },
+  'provider-new'() { S.providerEditing = -1; S.modelOptions = []; S.modelFetchMsg = ''; render() },
+  'provider-cancel'() { S.providerEditing = null; S.modelOptions = []; S.modelFetchMsg = ''; render() },
+  'provider-edit'({ index }) { S.providerEditing = index; S.modelOptions = []; S.modelFetchMsg = ''; render() },
+  async 'provider-fetch-models'(_, btn) {
+    const baseInput = document.getElementById('pv-base')
+    if (!baseInput) return
+    const baseUrl = baseInput.value.trim()
+    const apiKey = document.getElementById('pv-key')?.value || ''
+    const index = S.providerEditing
+    if (!baseUrl) { setModelStatus('请先填写接口地址', 'err'); return }
+    if (btn) { btn.disabled = true; btn.textContent = '获取中…' }
+    setModelStatus('正在获取模型列表…')
+    try {
+      const result = await api.ai.fetchModels({ baseUrl, apiKey, index: index >= 0 ? index : undefined })
+      if (result?.ok) {
+        S.modelOptions = result.models || []
+        applyModelOptions(S.modelOptions)
+        S.modelFetchMsg = result.message || `已获取 ${S.modelOptions.length} 个模型`
+        setModelStatus(`${S.modelFetchMsg}，可下拉选择或手动输入`, 'ok')
+      } else {
+        S.modelFetchMsg = result?.message || '获取模型列表失败'
+        setModelStatus(S.modelFetchMsg, 'err')
+      }
+    } catch (error) {
+      setModelStatus(error?.message || '获取模型列表失败', 'err')
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '获取模型列表' }
+    }
+  },
   async 'provider-save'({ index }, btn) {
     await run(btn, async () => {
       const name = document.getElementById('pv-name').value.trim()
@@ -1063,7 +1160,23 @@ document.addEventListener('input', (event) => {
   if (el.matches('#log-keyword')) {
     S.logFilter.keyword = el.value
     patchContainer('logs-list', logsList())
+    return
   }
+  if (el.matches('#pv-base')) { queueBasePreview(); return }
+})
+
+// 接口地址 / API Key 失焦后自动拉取模型列表（防抖，不打断输入）
+let modelAutoTimer = null
+document.addEventListener('focusout', (event) => {
+  const el = event.target
+  if (!el || !el.matches || !el.matches('#pv-base, #pv-key')) return
+  const baseUrl = (document.getElementById('pv-base')?.value || '').trim()
+  const key = document.getElementById('pv-key')?.value || ''
+  if (!baseUrl) return
+  // 没有 Key、也不是编辑已有模型（可用已存 Key）时不自动拉取，避免无谓报错
+  if (!key && !(S.providerEditing >= 0)) return
+  clearTimeout(modelAutoTimer)
+  modelAutoTimer = setTimeout(() => { ACTIONS['provider-fetch-models']({}, null) }, 400)
 })
 
 function setPath(root, path, value) {

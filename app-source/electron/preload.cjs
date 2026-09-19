@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('desktopApp', {
     deleteProvider: (name) => ipcRenderer.invoke('ai:delete-provider', name),
     setPrimaryProvider: (name) => ipcRenderer.invoke('ai:set-primary-provider', name),
     testProvider: (index) => ipcRenderer.invoke('ai:test-provider', index),
+    fetchModels: (payload) => ipcRenderer.invoke('ai:fetch-models', payload),
+    normalizeBaseUrl: (value) => ipcRenderer.invoke('ai:normalize-base-url', value),
     draft: (payload) => ipcRenderer.invoke('ai:draft', payload),
     draftSpark: (payload) => ipcRenderer.invoke('ai:draft-spark', payload),
     trainLearn: (payload) => ipcRenderer.invoke('train:learn', payload),

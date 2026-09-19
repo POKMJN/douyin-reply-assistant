@@ -1,4 +1,4 @@
-﻿const fs = require('node:fs')
+const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const os = require('node:os')
@@ -722,7 +722,7 @@ function extractConversationPreview(lines, explicitPreview = '', explicitStreak 
 function extractStreakCount(explicitStreak = '', lines = []) {
   const explicit = String(explicitStreak || '').match(/\d+/)
   if (explicit) return Number(explicit[0])
-  const labelled = (Array.isArray(lines) ? lines : []).find((value) => /鐏姳|杩炵画\s*\d+\s*澶﹟^\d+\s*澶?/.test(String(value)))
+  const labelled = (Array.isArray(lines) ? lines : []).find((value) => /火花|连续\s*\d+\s*天|^\d+\s*天/.test(String(value)))
   return Number((String(labelled || '').match(/\d+/) || [0])[0])
 }
 
@@ -1015,7 +1015,7 @@ class DouyinService {
       minWidth: 900,
       minHeight: 620,
       show,
-      title: '鎶栭煶璐﹀彿鐧诲綍 路 缁０',
+      title: '抖音账号登录 · 自动回复',
       autoHideMenuBar: true,
       webPreferences: {
         partition: this.partition,
@@ -1062,6 +1062,10 @@ class DouyinService {
         const found = id[1] || id[2] || id[3] || id[4]
         if (found) {
           this._videoDetailIds.add(found)
+          if (this._videoDetailIds.size > 80) {
+            const firstKey = this._videoDetailIds.values().next().value
+            if (firstKey) this._videoDetailIds.delete(firstKey)
+          }
           if (!this._capturedVideoUrl) this._capturedVideoUrl = 'https://www.douyin.com/video/' + found
           return found
         }
@@ -1108,13 +1112,17 @@ class DouyinService {
         window.__xushengVideoInfo = new Map()
         const collect = (text) => {
           try {
-            const data = JSON.parse(String(text || ''))
+            if (!text || typeof text !== 'string' || !text.includes('aweme_id')) return
+            const data = JSON.parse(text)
             const walk = (value) => {
               if (!value || typeof value !== 'object') return
               if (Array.isArray(value)) { value.forEach(walk); return }
               if (typeof value.aweme_id === 'string' && /^\\d{10,20}$/.test(value.aweme_id)) {
                 const id = value.aweme_id
-                if (!window.__xushengVideoIds.includes(id)) window.__xushengVideoIds.push(id)
+                if (!window.__xushengVideoIds.includes(id)) {
+                  window.__xushengVideoIds.push(id)
+                  if (window.__xushengVideoIds.length > 60) window.__xushengVideoIds.shift()
+                }
                 const shareInfo = value.share_info || value.shareInfo || value.share || {}
                 const author = String(
                   value.author?.nickname
@@ -1152,6 +1160,10 @@ class DouyinService {
                 addCover(value.cover?.url_list)
                 addCover(value.cover_url?.url_list)
                 addCover(value.images?.flatMap?.((image) => image?.url_list || []))
+                if (window.__xushengVideoInfo.size >= 60) {
+                  const oldestKey = window.__xushengVideoInfo.keys().next().value
+                  if (oldestKey) window.__xushengVideoInfo.delete(oldestKey)
+                }
                 window.__xushengVideoInfo.set(id, {
                   desc,
                   author,
@@ -1176,8 +1188,10 @@ class DouyinService {
           if (ArrayBuffer.isView(data)) { try { return new TextDecoder().decode(data.buffer, { stream: true }) } catch {} }
           if (typeof Blob !== 'undefined' && data instanceof Blob) {
             try {
-              // 同步拿不到 Blob 内容，异步处理
-              data.text().then((t) => collect(t)).catch(() => {})
+              // 仅对小体积 Blob 进行文本解码，超大媒体切片 Blob 跳过防止挤占堆内存
+              if (data.size <= 256 * 1024) {
+                data.text().then((t) => collect(t)).catch(() => {})
+              }
               return ''
             } catch {}
           }
@@ -1198,9 +1212,6 @@ class DouyinService {
                 }
                 return originalAddEventListener(type, listener, options)
               }
-              // onmessage 访问器定义在原型上，实例级覆盖不生效，
-              // 因此统一走 addEventListener 捕获；若页面用 onmessage 赋值，
-              // 通过包装原型访问器补捕获。
             } catch {}
             return socket
           }
@@ -1235,8 +1246,12 @@ class DouyinService {
           window.fetch = async (...args) => {
             const response = await originalFetch(...args)
             try {
-              const cloned = response.clone()
-              cloned.text().then(collect).catch(() => {})
+              const url = String(args[0]?.url || args[0] || '')
+              // 快速前置过滤：仅对可能含有视频详情/消息/评论的业务接口克隆流，直接放过视频流、静态资源与高频打点
+              if (/(?:aweme|im|message|comment|detail|web\\/v1)/i.test(url)) {
+                const cloned = response.clone()
+                cloned.text().then(collect).catch(() => {})
+              }
             } catch {}
             return response
           }
@@ -1248,7 +1263,7 @@ class DouyinService {
           return originalOpen.apply(this, args)
         }
         XMLHttpRequest.prototype.send = function (...args) {
-          if (this.__xushengUrl && /douyin\\.com|amemv\\.com/i.test(this.__xushengUrl)) {
+          if (this.__xushengUrl && /(?:aweme|im|message|comment|detail|web\\/v1)/i.test(this.__xushengUrl)) {
             this.addEventListener('load', () => { try { collect(this.responseText) } catch {} })
           }
           return originalSend.apply(this, args)
@@ -2428,10 +2443,10 @@ class DouyinService {
   async sendMessage(name, text, metadata = {}) {
     if (!name || !String(text).trim()) throw new Error('联系人和消息内容不能为空')
     this.assertCanSend(name)
-    // 回复频率节流：按联系人资料里配置的最小发送间隔限制（instant 不限）
+    // 回复频率节流：按联系人资料里配置的最小发送间隔限制（instant 不限，双消息的跟进短消息豁免）
     const freqContact = (this.storage.get().contacts || []).find((item) => item.name === name)
     const freqSeconds = REPLY_FREQUENCY_SECONDS[freqContact?.profile?.frequency] || 0
-    if (freqSeconds > 0) {
+    if (freqSeconds > 0 && !metadata.isFollowUp) {
       const lastAt = this.lastReplyTime.get(name) || 0
       const waitMs = freqSeconds * 1000 - (Date.now() - lastAt)
       if (waitMs > 0) throw new Error(`该联系人设置了回复间隔，请 ${Math.ceil(waitMs / 1000)} 秒后再发送`)
@@ -2627,27 +2642,620 @@ class DouyinService {
     } catch { /* turn 持久化失败不阻塞主流程 */ }
   }
 
-  // 内存卫生：超过阈值且空闲时刷新聊天页释放内存（每 10 分钟检查一次）
+  // ==================== 消息队列：收集 → 规划 → 执行 ====================
+  // 旧版是"轮询即处理"：一轮里遍历联系人、边发现边回；处理期间来的新消息只能靠
+  // auto_recheck"下轮重查"补，去重状态散在 lastSeen / turn / lastSent / lastSkipNotice
+  // 四处，既看不到积压、也保证不了顺序，同一个人连发多条时容易出现"只回最后一条"。
+  // 现在改成显式队列，三段式：
+  //   ① 收集：轮询只负责发现新消息并入队，不做任何回复动作；
+  //   ② 规划：出队前统一判定，结果只有 reply / hold / defer / skip 四种；
+  //   ③ 执行：严格串行，同一时刻只有一个 AI 调用和一次发送。
+  // 队列按联系人聚合（同一联系人只留最新一条，连发自动合并成一批）。未消费的消息
+  // 不推进 lastSeen，重启后会被重新发现并入队——等价于"队列不丢"。
+  incomingQueueMap() {
+    if (!(this.incomingQueue instanceof Map)) this.incomingQueue = new Map()
+    return this.incomingQueue
+  }
+
+  // 入队：同一联系人只保留最新一条待处理消息，连发合并成一批（回复仍针对最新预览，
+  // 更早的内容照样随 learning.messages 进入上下文）。
+  // 注意：未消费的消息每轮都会被"重新发现"（lastSeen 未推进），同 key 重复入队只刷新
+  // 元数据、不算新消息也不记日志——否则延后中的消息会每轮刷一条 queue_merged。
+  enqueueIncoming(item) {
+    if (!item?.name) return null
+    const queue = this.incomingQueueMap()
+    const previous = queue.get(item.name)
+    if (previous && previous.key === item.key) {
+      const refreshed = {
+        ...previous,
+        preview: item.preview,
+        unread: item.unread,
+        incomingIdentity: item.incomingIdentity || previous.incomingIdentity,
+        receivedAt: item.receivedAt || previous.receivedAt,
+      }
+      queue.set(item.name, refreshed)
+      return refreshed
+    }
+    const merged = previous
+      ? { ...item, mergedCount: (previous.mergedCount || 1) + 1, enqueuedAt: previous.enqueuedAt || item.enqueuedAt }
+      : { ...item, mergedCount: 1 }
+    queue.set(item.name, merged)
+    if (previous) {
+      // 日志节流：媒体预览的指纹键会随轮询抖动（同一张图集每轮指纹略有差异），
+      // 不节流会变成"每轮一条 queue_merged"。同一联系人 10 分钟最多记一条。
+      const noticeKey = `queue_merged:${item.name}`
+      if (Date.now() - (this.lastSkipNotice.get(noticeKey) || 0) >= 10 * 60 * 1000) {
+        this.lastSkipNotice.set(noticeKey, Date.now())
+        this.log('queue_merged', `${item.name} 又发来新消息，与待处理消息合并为一轮`, { name: item.name, merged: merged.mergedCount, queueSize: queue.size })
+      }
+    } else {
+      this.log('queue_enqueued', `新消息入队：${item.name}`, { name: item.name, mediaKind: item.mediaKind || '', queueSize: queue.size })
+    }
+    return merged
+  }
+
+  // ② 规划：出队前统一判定（只做不需要读页面的便宜判断，页面级守卫在执行阶段）
+  // 返回 [{ item, action, reason }]，action：reply 该回 / hold 暂留（限额） / defer 等条件成熟
+  planIncomingQueue({ canSend }) {
+    const queue = this.incomingQueueMap()
+    const plans = []
+    for (const item of [...queue.values()].sort((a, b) => (a.enqueuedAt || 0) - (b.enqueuedAt || 0))) {
+      if (item.deferUntil && Date.now() < item.deferUntil) {
+        plans.push({ item, action: 'defer', reason: 'wait_until' })
+        continue
+      }
+      // 每日发送上限：保留消息，限额重置后补回（与旧版一致，不消费）
+      if (!canSend(item.name)) {
+        const noticeKey = `${item.name}:${localDateKey()}`
+        if (!this.lastLimitNotice.has(noticeKey)) {
+          this.lastLimitNotice.set(noticeKey, Date.now())
+          this.log('send_blocked', `已达到每日发送上限，暂不回复 ${item.name}`, { name: item.name })
+        }
+        plans.push({ item, action: 'hold', reason: 'daily_limit' })
+        continue
+      }
+      plans.push({ item, action: 'reply', reason: '' })
+    }
+    return plans
+  }
+
+  // 消费：推进 lastSeen 与轮次状态并出队（这条消息闭环）
+  markIncomingConsumed(item) {
+    this.lastSeen.set(item.name, item.key)
+    this.persistTurn(item.name, (turn) => ({ ...turn, lastHandledKey: item.key }))
+    this.incomingQueueMap().delete(item.name)
+  }
+
+  // ① 收集：扫描联系人，把"未消费的新消息"入队。除媒体身份探测外不做任何动作。
+  async collectIncoming(contacts, ctx) {
+    const { autoReplyOn, blacklist, aiDisabledContacts } = ctx
+    for (const contact of contacts) {
+      const timeMeta = conversationTimeMeta(contact)
+      const previewMediaKind = mediaPreviewKind(contact.preview)
+      let currentMessageKey = contactMessageKey(contact)
+      // 每日消息键：对方每天发同样的"早上好/嗨"是新的一天的新消息——文本消息把
+      // 【收到日期】并入 key：同一天相同文本只处理一次（防刷屏），跨天自动解锁
+      // （旧版跨天同文本会被误判"已处理"而永远沉默；媒体消息沿用指纹键不受影响）
+      if (!previewMediaKind) currentMessageKey = dailyMessageKey(currentMessageKey, timeMeta.sentAt)
+      const previous = this.lastSeen.get(contact.name)
+      if (currentMessageKey !== previous) this.lastActivityAt = Date.now()
+      const hasPrevious = this.lastSeen.has(contact.name)
+      if (!contact.preview) {
+        this.lastSeen.set(contact.name, currentMessageKey)
+        continue
+      }
+      if (!autoReplyOn) continue // 主动任务在循环外处理；来消息不被消费，恢复后仍可回复
+      const receivedAt = timeMeta.sentAt
+      const receivedAtMs = receivedAt ? new Date(receivedAt).getTime() : Number.NaN
+      const recentlyReceived = Number.isFinite(receivedAtMs) && Date.now() - receivedAtMs <= 30 * 60_000
+      let incomingIdentity = null
+      const shouldInspectMediaIdentity = Boolean(previewMediaKind) && (
+        !hasPrevious
+        || Boolean(contact.unread)
+        || recentlyReceived
+        || !isMediaMessageKey(previous, contact.preview)
+      )
+      if (shouldInspectMediaIdentity) {
+        try {
+          incomingIdentity = await this.captureLatestIncomingMessageIdentity(contact.name)
+          if (incomingIdentity?.fingerprint) currentMessageKey = mediaMessageKey(contact, incomingIdentity.fingerprint)
+        } catch (_) {}
+      } else if (previewMediaKind && isMediaMessageKey(previous, contact.preview)) {
+        currentMessageKey = previous
+      }
+      // 基线：首见联系人只建基线不回复（防旧会话被意外回复）
+      if (!hasPrevious && !(previewMediaKind && (Boolean(contact.unread) || recentlyReceived))) {
+        this.lastSeen.set(contact.name, currentMessageKey)
+        continue
+      }
+      const legacyMediaKey = Boolean(previewMediaKind) && hasPrevious && !isMediaMessageKey(previous, contact.preview)
+      if (legacyMediaKey && incomingIdentity?.fingerprint && previous === contactMessageKey(contact) && !contact.unread && !recentlyReceived) {
+        this.lastSeen.set(contact.name, currentMessageKey)
+        continue
+      }
+      if (previous === currentMessageKey) continue
+      if (blacklist.has(contact.name)) {
+        const firstBlockedThisSession = !this.blockedContacts.has(contact.name)
+        this.blockedContacts.add(contact.name)
+        if (firstBlockedThisSession) this.log('auto_blocked', `已跳过 ${contact.name}：该联系人位于黑名单`, { name: contact.name, reason: 'blacklist' })
+        continue
+      }
+      if (aiDisabledContacts.has(contact.name)) continue // 用户主动关闭：不刷日志、不消费消息
+      this.enqueueIncoming({
+        name: contact.name,
+        key: currentMessageKey,
+        preview: contact.preview,
+        mediaKind: previewMediaKind,
+        receivedAt,
+        unread: Boolean(contact.unread),
+        incomingIdentity,
+        enqueuedAt: Date.now(),
+        attempts: 0,
+      })
+    }
+  }
+
+  // ③ 执行队列：串行处理规划结果，一次只跑一个 AI 调用 + 一次发送
+  async drainIncomingQueue(ctx) {
+    const queue = this.incomingQueueMap()
+    if (!queue.size) return
+    const startedAt = Date.now()
+    const oldestEnqueuedAt = Math.min(...[...queue.values()].map((item) => item.enqueuedAt || startedAt))
+    const plans = this.planIncomingQueue(ctx)
+    const contactsByName = new Map((ctx.contacts || []).map((contact) => [contact.name, contact]))
+    let consumed = 0
+    let deferred = 0
+    let held = 0
+    for (const plan of plans) {
+      if (ctx?.isCancelled?.()) break
+      if (plan.action === 'hold') { held += 1; continue }
+      if (plan.action === 'defer') { deferred += 1; continue }
+      const item = plan.item
+      const contact = contactsByName.get(item.name)
+      if (!contact) { queue.delete(item.name); continue }
+      const result = await this.handleIncomingItem(item, contact, ctx)
+      if (result === 'consumed') consumed += 1
+      else deferred += 1
+    }
+    // 观测：只在真的消费了消息时记一条处理汇总；队列长期积压时单独告警（10 分钟一次），
+    // 避免"每轮一条 queue_drained"这种刷屏式日志。
+    const waitedMs = Math.max(0, startedAt - oldestEnqueuedAt)
+    if (consumed > 0) {
+      this.log('queue_drained', `队列处理完成：消费 ${consumed} 条 / 延后 ${deferred} 条 / 保留 ${held} 条`, {
+        consumed,
+        deferred,
+        held,
+        queueSize: this.incomingQueueMap().size,
+        waitedMs,
+        elapsedMs: Date.now() - startedAt,
+      })
+    } else if (waitedMs >= 5 * 60 * 1000 && Date.now() - (this.lastSkipNotice.get('queue_backlog') || 0) >= 10 * 60 * 1000) {
+      this.lastSkipNotice.set('queue_backlog', Date.now())
+      this.log('queue_backlog', `队列积压 ${this.incomingQueueMap().size} 条，最早一条已等待 ${Math.round(waitedMs / 1000)} 秒`, {
+        queueSize: this.incomingQueueMap().size,
+        waitedMs,
+        deferred,
+        held,
+      })
+    }
+  }
+
+  // 执行单条消息：页面级守卫 + AI 拟回复 + 发送。
+  // 返回 'consumed'（消息闭环、出队）或 'deferred'（保留在队列，下轮重新规划）
+  async handleIncomingItem(item, contact, ctx) {
+    const { settings, today, factCandidates, topicCandidates } = ctx
+    const currentMessageKey = item.key
+    const incomingIdentity = item.incomingIdentity
+    const timeMeta = conversationTimeMeta(contact)
+
+    // 延后：保留消息（不推进 lastSeen），带重试时间回队列。
+    // 日志节流：同一联系人同一原因每 10 分钟最多一条——延后项每轮都会重新规划，
+    // 不节流会变成"每轮刷日志"，既污染运行记录又白写盘。
+    const defer = (reason, waitMs = 0) => {
+      const queued = this.incomingQueueMap().get(item.name)
+      if (queued) {
+        queued.attempts = (queued.attempts || 0) + 1
+        queued.deferUntil = waitMs ? Date.now() + waitMs : 0
+      }
+      if (reason) {
+        const logKey = `${item.name}:${reason}`
+        const lastLoggedAt = this.lastSkipNotice.get(`queue_defer:${logKey}`) || 0
+        if (Date.now() - lastLoggedAt >= 10 * 60 * 1000) {
+          this.lastSkipNotice.set(`queue_defer:${logKey}`, Date.now())
+          this.log('queue_deferred', `${item.name} 本轮不处理：${reason}`, { name: item.name, reason, attempts: queued?.attempts || 1 })
+        }
+      }
+      return 'deferred'
+    }
+
+    // 角色判定（三层）。最后一条消息的发送方【无法确认】时绝不抢发——
+    // 旧版把 null 当成"对方发的"处理，这是自动回复自言自语循环的直接来源。
+    const fromMe = contact.fromMe === true
+      ? true
+      : incomingIdentity?.role === 'me'
+        ? true
+        : incomingIdentity?.role === 'contact'
+          ? false
+          : await this.isLastMessageFromMe(contact.name)
+    if (fromMe === true) {
+      // 竞态保护：最后一条是"我"但预览像对方媒体时，可能是新消息被盖住——不消费，下轮重查
+      if (shouldDeferConsumptionOnFromMe(contact.preview, this.lastSent.get(contact.name) || '')) {
+        // 去重：同一联系人每 10 分钟最多提示一次。此处消息 key 含媒体指纹、会逐轮变化，
+        // 仅按 key 去重无效，会每轮（约 5 秒）刷一条日志、疯狂写盘并推高主进程内存。
+        const noticeKey = `defer_on_from_me:${contact.name}`
+        if (Date.now() - (this.lastSkipNotice.get(noticeKey) || 0) >= 10 * 60 * 1000) {
+          this.lastSkipNotice.set(noticeKey, Date.now())
+          this.log('auto_recheck', `${contact.name} 疑似在我回复期间发来新消息，暂不消费，下轮重查`, { name: contact.name, preview: String(contact.preview || '').slice(0, 60) })
+        }
+        return defer('', 20 * 1000)
+      }
+      this.markIncomingConsumed(item)
+      return 'consumed'
+    }
+    if (fromMe !== false) {
+      const noticeKey = `role_unknown:${contact.name}:${currentMessageKey}`
+      if (!this.lastSkipNotice.has(noticeKey)) {
+        this.lastSkipNotice.set(noticeKey, Date.now())
+        this.log('auto_recheck', `无法确认 ${contact.name} 最后一条消息的发送方，本轮不回复，下轮重查`, { name: contact.name })
+      }
+      return defer('role_unknown', 30 * 1000)
+    }
+    // 我方回声守卫：预览就是刚发出的内容（或带 AI 标签的回显），绝不再次回复
+    const lastSentText = String(this.lastSent.get(contact.name) || '').replace(/\s+/g, ' ').trim()
+    const previewText = String(contact.preview || '').replace(/\s+/g, ' ').trim()
+    if (lastSentText && (previewText === lastSentText || previewText.startsWith(lastSentText) || previewText.includes('【AI · '))) {
+      this.markIncomingConsumed(item)
+      return 'consumed'
+    }
+    // 引擎轮次闸门：同一消息 key 只处理一次；两次自动发送之间有最小间隔
+    const gate = shouldAutoReply(contact, { key: currentMessageKey, fromMe: false })
+    if (!gate.ok) {
+      if (gate.reason === 'already_handled') {
+        this.markIncomingConsumed(item)
+        return 'consumed'
+      }
+      if (gate.reason === 'min_gap') {
+        const noticeKey = `min_gap:${contact.name}`
+        if (!this.lastSkipNotice.has(noticeKey)) {
+          this.lastSkipNotice.set(noticeKey, Date.now())
+          this.log('auto_recheck', `${contact.name} 刚回复过，等待 ${Math.ceil((gate.retryInMs || 0) / 1000)} 秒后再处理`, { name: contact.name })
+        }
+        return defer('min_gap', gate.retryInMs || 20000)
+      }
+      return defer(gate.reason || 'gate_blocked')
+    }
+    const learnedContact = this.recordConversationMessage(contact.name, 'contact', contact.preview, contact, { human: true })
+    // 长期记忆候选：今天尚未提炼的联系人才入列（每天最多一次）
+    if (settings.longTermMemory !== false && this.ai?.mineFacts && learnedContact?.learning?.factsUpdatedAt !== today) {
+      factCandidates.push(learnedContact)
+    }
+    // 话题状态候选：最近一次话题记录早于 2 小时才入列
+    if (this.ai?.summarizeRecentTopic) {
+      const topicLog = Array.isArray(learnedContact?.learning?.topicLog) ? learnedContact.learning.topicLog : []
+      const lastTopicAt = topicLog.length ? new Date(topicLog.at(-1).at).getTime() : 0
+      if (!Number.isFinite(lastTopicAt) || Date.now() - lastTopicAt >= 2 * 60 * 60 * 1000) {
+        topicCandidates.push(learnedContact)
+      }
+    }
+    let replyText = ''
+    let aiAttempted = false
+    let aiDraft = null
+    if (this.ai?.hasProvider?.()) {
+      // AI 失败退避：同联系人连续失败时按指数拉长重试间隔（30s→2min→8min→30min）
+      const backoff = this.aiBackoff.get(contact.name)
+      if (backoff && Date.now() < backoff.retryAt) {
+        if (!this.lastSkipNotice.has(`ai_backoff:${contact.name}`)) {
+          this.lastSkipNotice.set(`ai_backoff:${contact.name}`, Date.now())
+          this.log('ai_backoff', `${contact.name} 的 AI 调用暂缓（${Math.ceil((backoff.retryAt - Date.now()) / 1000)} 秒后重试）`, { name: contact.name })
+        }
+        return defer('ai_backoff', Math.max(1000, backoff.retryAt - Date.now()))
+      }
+      aiAttempted = true
+      try {
+        // 打开会话抓取完整可见消息，增强上下文（传入 previous.learning 防止 facts/topicLog 被擦）
+        let enhancedContact = learnedContact
+        try {
+          const chatWin = await this.selectConversation(contact.name)
+          if (chatWin) {
+            const visibleMessages = await this.captureVisibleMessages(chatWin)
+            if (visibleMessages.length > 0) {
+              const mergedMessages = mergeMessageHistory(learnedContact.learning?.messages, visibleMessages)
+              const enhancedLearning = this.ai.analyzeConversation(mergedMessages, learnedContact.learning)
+              enhancedContact = { ...learnedContact, learning: enhancedLearning }
+            }
+          }
+        } catch (_) { /* 抓取失败回退预览文本 */ }
+
+        let mediaCapture = normalizeCapturedMedia([])
+        const mediaKind = mediaPreviewKind(contact.preview)
+        const isMedia = Boolean(mediaKind)
+        let useMediaForReply = isMedia
+        if (isMedia) {
+          if (settings.videoReplyEnabled === false || settings.videoRecognitionEnabled === false) {
+            if (hasReplyablePreviewText(contact.preview)) {
+              useMediaForReply = false
+              this.log('media_text_fallback', `${contact.name} 媒体回复已关闭，使用预览文本回复`, { name: contact.name, mediaKind, reason: 'replyable_preview' })
+            } else {
+              this.log('media_skipped', `${contact.name} 媒体已跳过：视频回复已关闭`, { name: contact.name, mediaKind, reason: 'video_reply_disabled' })
+              this.markIncomingConsumed(item)
+              return 'consumed'
+            }
+          } else {
+            try {
+              const recognition = videoRecognitionOptions(settings)
+              mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, recognition), mediaKind)
+              if (shouldUseVideoFrameFallback(recognition, mediaCapture) && this.captureLatestIncomingVideo) {
+                mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingVideo(contact.name), mediaKind)
+              }
+            } catch (_) {}
+          }
+        }
+        const providers = this.storage.get().providers || []
+        const hasAudioTranscript = Boolean(mediaCapture.audioTranscript)
+        const hasPublicContext = hasPublicMediaContext(mediaCapture)
+        if (useMediaForReply && !mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext && hasReplyablePreviewText(contact.preview)) {
+          useMediaForReply = false
+          this.log('media_text_fallback', `${contact.name} 媒体捕获不可用，使用预览文本回复`, { name: contact.name, mediaKind, reason: mediaCapture.reason || 'media_capture_unavailable' })
+        }
+        if (useMediaForReply) {
+          const caps = providers.length ? providers.some(p => (p.capabilities || []).includes('vision')) : Boolean(this.ai?.hasProvider?.())
+          if (!caps && !hasAudioTranscript && !hasPublicContext) {
+            this.log('media_skipped', `${contact.name} 媒体已跳过：模型不支持视觉`, { name: contact.name, mediaKind })
+            this.markIncomingConsumed(item)
+            return 'consumed'
+          }
+          const requiresDecodedVideo = mediaKind === 'video' || mediaCapture.detectedVideo === true
+          if (!mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext) {
+            this.log(requiresDecodedVideo ? 'video_unreadable' : 'media_uncertain', `${contact.name} 媒体画面无法捕获`, { name: contact.name, mediaKind })
+            this.markIncomingConsumed(item)
+            return 'consumed'
+          }
+        }
+        aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: timeMeta, videoFrames: useMediaForReply ? mediaCapture : undefined })
+        if (aiDraft?.ok && (aiDraft.labeledText || aiDraft.text)) {
+          const model = aiDraft.model || providers?.[0]?.model || '当前模型'
+          const label = aiDraft.aiLabel || `AI · ${model}`
+          const showAiModelLabel = this.storage.get().settings?.showAiModelLabel !== false
+          const generated = String(showAiModelLabel ? (aiDraft.labeledText || aiDraft.text) : aiDraft.text).trim()
+          replyText = showAiModelLabel && !generated.startsWith(`【${label}】`) ? `【${label}】${generated}` : generated
+        }
+      } catch (error) {
+        this.log('ai_error', `为 ${contact.name} 调用 AI 失败`, { name: contact.name, error: error.message })
+        const prevStep = this.aiBackoff.get(contact.name)?.step || 0
+        const step = Math.min(prevStep + 1, 4)
+        const delay = [30000, 120000, 480000, 1800000][step - 1]
+        this.aiBackoff.set(contact.name, { step, retryAt: Date.now() + delay })
+        return defer('ai_error', delay) // 不消费，退避后重试
+      }
+    }
+    if (replyText) {
+      try {
+        const mediaKindForReply = mediaPreviewKind(contact.preview)
+        if (mediaKindForReply && isUnavailableMediaReply(replyText)) {
+          this.log('ai_reply_rejected', `${contact.name} 的媒体回复已拦截`, { name: contact.name, mediaKind: mediaKindForReply, text: replyText, reason: 'unavailable_media_reply' })
+          this.markIncomingConsumed(item)
+          return 'consumed'
+        }
+        // 草稿模式：AI 生成的回复进入草稿列表等待人工确认
+        if (settings.aiReplyDraftOnly === true) {
+          const drafts = [...(this.storage.get().pendingDrafts || [])]
+          drafts.unshift({ id: Date.now(), at: new Date().toISOString(), name: contact.name, text: replyText + (aiDraft?.text2 ? '\n' + aiDraft.text2 : ''), incoming: String(contact.preview || ''), model: aiDraft?.model || '', provider: aiDraft?.provider || '', status: 'pending' })
+          const capped = drafts.slice(0, 50)
+          this.storage.update({ pendingDrafts: capped })
+          this.emitEvent('drafts', { drafts: capped })
+          this.log('ai_draft_pending', `已为 ${contact.name} 生成 AI 草稿待确认`, { name: contact.name, text: replyText })
+          this.markIncomingConsumed(item)
+          return 'consumed'
+        }
+        const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || '', provider: aiDraft?.provider || '', aiLabel: aiDraft?.aiLabel || '' } : { source: 'rule' }
+        // 拟人延迟：AI 回复不秒回，按长度加 1.5–12 秒随机"打字时间"
+        if (aiAttempted) await sleep(humanReplyDelay(replyText))
+        await this.sendMessage(contact.name, replyText, aiMeta)
+        this.aiBackoff.delete(contact.name)
+        this.lastSeen.set(contact.name, currentMessageKey)
+        this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey, lastOutgoingAt: Date.now() }))
+        // 双消息（允许而非必须）：模型补了第二条随口话时紧跟发出；独立容错，
+        // 失败只记日志——首条已送达，轮次已闭环，绝不能因此重发首条
+        const followUp = aiAttempted ? String(aiDraft?.text2 || '') : ''
+        if (followUp) {
+          try {
+            await sleep(humanReplyDelay(followUp))
+            await this.sendMessage(contact.name, followUp, { ...aiMeta, isFollowUp: true })
+          } catch (followError) {
+            this.log('send_error', `第二条消息发送失败（首条已送达，不影响本轮）`, { name: contact.name, error: followError.message })
+          }
+        }
+        this.incomingQueueMap().delete(contact.name)
+        return 'consumed'
+      } catch (error) {
+        this.log('send_error', `自动回复发送失败：${contact.name}`, { name: contact.name, error: error.message })
+        return defer('send_error', 60 * 1000) // 不消费，下轮重试
+      }
+    }
+    if (aiAttempted && aiDraft?.rejected === true) {
+      // 拒发不重试：同一输入重试大概率产出同类内容，直接消费消息（宁可不说）
+      this.markIncomingConsumed(item)
+      return 'consumed'
+    }
+    if (aiAttempted) {
+      const noticeKey = `ai_empty:${contact.name}:${currentMessageKey}`
+      if (!this.lastSkipNotice.has(noticeKey)) {
+        this.lastSkipNotice.set(noticeKey, Date.now())
+        this.log('ai_empty', `AI 未返回有效回复，保留 ${contact.name} 的消息待重试`, { name: contact.name })
+      }
+      return defer('ai_empty', 60 * 1000)
+    }
+    const noticeKey = `ai_unavailable:${contact.name}:${currentMessageKey}`
+    if (!this.lastSkipNotice.has(noticeKey)) {
+      this.lastSkipNotice.set(noticeKey, Date.now())
+      this.log('ai_unavailable', `未配置可用模型，保留 ${contact.name} 的消息待重试`, { name: contact.name })
+    }
+    return defer('ai_unavailable', 60 * 1000)
+  }
+
+  // 内存卫生：聊天页是常驻重型 SPA，渲染进程会累积数百 MB。
+  // 每 3 分钟及每轮任务结束进入空闲时检查一次：
+  // 1. 达到内存超标线（Working Set >= 450MB 或 JS堆 >= 160MB）
+  // 2. 连续常驻达到 45 分钟生命周期上限（Proactive Lifecycle Recycling）
+  // 满足上述任一条件且当前空闲无待发消息时，优雅重建渲染进程（OS 彻底回收 400~700MB 物理内存）。
+  // 未达重建条件时，每 5 分钟在页面上下文进行一次轻量显存与缓存清洁。
   startMemoryHygiene() {
     if (this._memoryTimer) return
     this._pageLoadedAt = Date.now()
-    this._memoryTimer = setInterval(() => {
-      if (this.polling || this.verificationActive) return
-      try {
-        const win = this.window
-        if (!win || win.isDestroyed()) return
-        if (win.webContents.isLoading()) return
-        const pid = win.webContents.getOSProcessId()
-        const metric = process.getAppMetrics().find((m) => m.pid === pid)
-        const memMB = metric ? (metric.memory?.workingSetSize || 0) : 0
-        const uptimeMin = Math.round((Date.now() - (this._pageLoadedAt || Date.now())) / 60000)
-        if (memMB > 400 && uptimeMin >= 10) {
-          this.log('memory_hygiene', `聊天页内存 ${memMB}MB 超过阈值，已自动刷新页面释放内存`, { memMB, uptimeMin })
-          this._pageLoadedAt = Date.now()
-          win.webContents.loadURL(CHAT_URL).catch(() => {})
+    this._memoryTimer = setInterval(() => { this.runMemoryHygiene().catch(() => {}) }, 3 * 60 * 1000)
+  }
+
+  // 内部集合生命周期淘汰：防止 lastSkipNotice, _videoDetailIds, aiBackoff, lastLimitNotice 随运行天数无限膨胀
+  cleanupInternalMaps() {
+    const now = Date.now()
+    if (this.lastSkipNotice instanceof Map) {
+      if (this.lastSkipNotice.size > 120) {
+        for (const [k, v] of this.lastSkipNotice.entries()) {
+          if (now - v > 30 * 60 * 1000 || this.lastSkipNotice.size > 80) {
+            this.lastSkipNotice.delete(k)
+          }
         }
-      } catch { /* 内存检查失败不影响自动化 */ }
-    }, 10 * 60 * 1000)
+      }
+    }
+    if (this._videoDetailIds instanceof Set && this._videoDetailIds.size > 80) {
+      const excess = this._videoDetailIds.size - 80
+      const it = this._videoDetailIds.values()
+      for (let i = 0; i < excess; i++) {
+        this._videoDetailIds.delete(it.next().value)
+      }
+    }
+    if (this.aiBackoff instanceof Map) {
+      for (const [k, v] of this.aiBackoff.entries()) {
+        if (now >= v) this.aiBackoff.delete(k)
+      }
+    }
+    if (this.lastLimitNotice instanceof Map) {
+      for (const [k, v] of this.lastLimitNotice.entries()) {
+        if (now - v > 24 * 60 * 60 * 1000) this.lastLimitNotice.delete(k)
+      }
+    }
+    if (this.lastReplyTime instanceof Map) {
+      for (const [k, v] of this.lastReplyTime.entries()) {
+        if (now - v > 24 * 60 * 60 * 1000) this.lastReplyTime.delete(k)
+      }
+    }
+  }
+
+  // 页面内轻量清洁（不销毁窗口）：释放已暂停视频的显存，限制页面内元数据缓存
+  async runInPageCleanup(win) {
+    if (!win || win.isDestroyed?.() || win.webContents?.isLoading?.()) return
+    try {
+      await win.webContents.executeJavaScript(`(() => {
+        try {
+          if (window.__xushengVideoIds && window.__xushengVideoIds.length > 30) {
+            window.__xushengVideoIds = window.__xushengVideoIds.slice(-30)
+          }
+          if (window.__xushengVideoInfo && window.__xushengVideoInfo.size > 30) {
+            const excess = window.__xushengVideoInfo.size - 30
+            const it = window.__xushengVideoInfo.keys()
+            for (let i = 0; i < excess; i++) {
+              const k = it.next().value
+              if (k) window.__xushengVideoInfo.delete(k)
+            }
+          }
+          const mediaEls = document.querySelectorAll('video, audio')
+          for (const el of mediaEls) {
+            if (el.paused && (!el.offsetParent || el.getBoundingClientRect().height === 0)) {
+              el.removeAttribute('src')
+              el.load()
+            }
+          }
+          if (typeof window.gc === 'function') window.gc()
+        } catch {}
+      })()`).catch(() => {})
+    } catch {}
+    try {
+      const el = require('electron')
+      const ses = el?.session?.fromPartition?.(this.partition)
+      ses?.clearCodeCaches?.({}).catch?.(() => {})
+    } catch {}
+  }
+
+  // 读取聊天页渲染进程内存（MB）。注意：Electron 37 起 getAppMetrics 只在 app 上
+  // （process.getAppMetrics 已移除，旧代码因此一直抛错、清理从未生效）。
+  // 这里逐级回退：app.getAppMetrics → process.getAppMetrics → 渲染进程 JS 堆。
+  async readChatPageMemoryMB(win) {
+    try {
+      const el = require('electron')
+      const fn = (el && el.app && typeof el.app.getAppMetrics === 'function')
+        ? el.app.getAppMetrics.bind(el.app)
+        : (typeof process.getAppMetrics === 'function' ? process.getAppMetrics.bind(process) : null)
+      if (fn) {
+        const pid = win.webContents.getOSProcessId()
+        const metric = fn().find((m) => m.pid === pid)
+        // workingSetSize 单位是 KB（Electron MemoryInfo），换算成 MB
+        if (metric) return { memMB: Math.round((metric.memory?.workingSetSize || 0) / 1024), source: 'appMetrics' }
+      }
+    } catch { /* 换下一级回退 */ }
+    try {
+      const bytes = await win.webContents.executeJavaScript('(performance.memory && performance.memory.usedJSHeapSize) || 0').catch(() => 0)
+      if (bytes) return { memMB: Math.round(Number(bytes) / 1048576), source: 'jsHeap' }
+    } catch { /* ignore */ }
+    return { memMB: 0, source: 'none' }
+  }
+
+  async runMemoryHygiene() {
+    this.cleanupInternalMaps()
+    if (this.polling || this.verificationActive) return
+    const win = this.window
+    if (!win || win.isDestroyed()) return
+    if (win.webContents.isLoading()) return
+    // 待发送队列非空、或用户正在前台交互时，绝不打断
+    if (this.incomingQueue instanceof Map && this.incomingQueue.size > 0) return
+    if (win.isVisible()) return
+
+    const now = Date.now()
+    const uptimeMin = Math.round((now - (this._pageLoadedAt || now)) / 60000)
+    const { memMB, source } = await this.readChatPageMemoryMB(win)
+
+    // 触发条件（精准双轨治理）：
+    // 1. 内存硬超标：常驻内存达到 450MB（或 JS 堆 160MB）且已加载 10 分钟以上
+    const overMem = source === 'jsHeap' ? memMB >= 160 : memMB >= 450
+    // 2. 存活轮转上限：运行达到 45 分钟且当前处于完全空闲，主动轮转以彻底释放累积的 DOM、显存与垃圾
+    const maxUptimeReached = uptimeMin >= 45
+
+    if (!((overMem && uptimeMin >= 10) || maxUptimeReached)) {
+      // 未达到彻底重建标准时，每 5 分钟执行一次免重载页内轻量显存与缓存清洁
+      if (now - (this._lastInPageCleanupAt || 0) >= 5 * 60 * 1000) {
+        this._lastInPageCleanupAt = now
+        await this.runInPageCleanup(win).catch(() => {})
+      }
+      return
+    }
+
+    const reason = overMem
+      ? `常驻内存偏高 ${memMB}MB（${source}）/ 已运行 ${uptimeMin} 分钟`
+      : `已连续常驻 ${uptimeMin} 分钟达到轮转周期`
+    this.log('memory_hygiene', `抖音聊天页${reason}，重建渲染进程彻底释放内存`, { memMB, source, uptimeMin })
+    await this.recycleChatWindow()
+  }
+
+  // 重建聊天页：destroy 让渲染进程彻底退出（OS 回收内存），清空 Chromium 会话缓存，下次轮询按需重建
+  async recycleChatWindow() {
+    const win = this.window
+    if (!win || win.isDestroyed()) return
+    // 前台保护：用户正在操作登录窗口时不强制销毁
+    if (win.isVisible()) return
+    this.window = null
+    this._pageLoadedAt = Date.now()
+    try {
+      win.__forceClose = true
+      win.destroy()
+    } catch { /* 销毁失败不阻塞自动化 */ }
+    try {
+      const el = require('electron')
+      const ses = el?.session?.fromPartition?.(this.partition)
+      if (ses) {
+        await ses.clearCache().catch(() => {})
+        await ses.clearCodeCaches({}).catch(() => {})
+      }
+    } catch {}
+    try { if (typeof global.gc === 'function') global.gc() } catch { /* 主进程堆回收（需 --expose-gc） */ }
   }
 
   async runAutomation() {
@@ -2695,299 +3303,35 @@ class DouyinService {
       }
       if (challenged) return
     } catch { /* 检测失败不阻塞本轮 */ }
-    // 看门狗：页面 executeJavaScript 卡死会让本轮无限挂起，整轮超 5 分钟强制中止
+    // 看门狗与轮次令牌：超时作废本轮令牌，避免卡死超时后与下一轮并发运行造成 DOM 冲突
+    const runToken = Symbol('runAutomation')
+    this._currentRunToken = runToken
+    const isCancelled = () => this._currentRunToken !== runToken
+
     const watchdog = setTimeout(() => {
       this.log('worker_watchdog', '自动回复本轮执行超时，已强制跳过本轮', { detail: '页面可能卡死' })
+      if (this._currentRunToken === runToken) this._currentRunToken = null
       this.polling = false
     }, 5 * 60 * 1000)
     this.polling = true
     try {
       const { contacts } = await this.syncContacts()
+      if (isCancelled()) return
       const today = localDateKey()
       const blacklist = new Set((config.blacklist || []).map((name) => String(name).trim()).filter(Boolean))
       const aiDisabledContacts = new Set((config.aiDisabledContacts || []).map((name) => String(name).trim()).filter(Boolean))
       const canSend = (name) => !blacklist.has(name) && this.getSendAllowance(name).ok
       const factCandidates = []
       const topicCandidates = []
-      for (const contact of contacts) {
-        const timeMeta = conversationTimeMeta(contact)
-        const previewMediaKind = mediaPreviewKind(contact.preview)
-        let currentMessageKey = contactMessageKey(contact)
-        // 每日消息键：对方每天发同样的"早上好/嗨"是新的一天的新消息——文本消息把
-        // 【收到日期】并入 key：同一天相同文本只处理一次（防刷屏），跨天自动解锁
-        // （旧版跨天同文本会被误判"已处理"而永远沉默；媒体消息沿用指纹键不受影响）
-        if (!previewMediaKind) currentMessageKey = dailyMessageKey(currentMessageKey, timeMeta.sentAt)
-        const previous = this.lastSeen.get(contact.name)
-        if (currentMessageKey !== previous) this.lastActivityAt = Date.now()
-        const hasPrevious = this.lastSeen.has(contact.name)
-        if (!contact.preview) {
-          this.lastSeen.set(contact.name, currentMessageKey)
-          continue
-        }
-        if (!autoReplyOn) continue // 主动任务在循环外处理；来消息不被消费，恢复后仍可回复
-        const receivedAt = timeMeta.sentAt
-        const receivedAtMs = receivedAt ? new Date(receivedAt).getTime() : Number.NaN
-        const recentlyReceived = Number.isFinite(receivedAtMs) && Date.now() - receivedAtMs <= 30 * 60_000
-        let incomingIdentity = null
-        const shouldInspectMediaIdentity = Boolean(previewMediaKind) && (
-          !hasPrevious
-          || Boolean(contact.unread)
-          || recentlyReceived
-          || !isMediaMessageKey(previous, contact.preview)
-        )
-        if (shouldInspectMediaIdentity) {
-          try {
-            incomingIdentity = await this.captureLatestIncomingMessageIdentity(contact.name)
-            if (incomingIdentity?.fingerprint) currentMessageKey = mediaMessageKey(contact, incomingIdentity.fingerprint)
-          } catch (_) {}
-        } else if (previewMediaKind && isMediaMessageKey(previous, contact.preview)) {
-          currentMessageKey = previous
-        }
-        // 基线：首见联系人只建基线不回复（防旧会话被意外回复）
-        if (!hasPrevious && !(previewMediaKind && (Boolean(contact.unread) || recentlyReceived))) {
-          this.lastSeen.set(contact.name, currentMessageKey)
-          continue
-        }
-        const legacyMediaKey = Boolean(previewMediaKind) && hasPrevious && !isMediaMessageKey(previous, contact.preview)
-        if (legacyMediaKey && incomingIdentity?.fingerprint && previous === contactMessageKey(contact) && !contact.unread && !recentlyReceived) {
-          this.lastSeen.set(contact.name, currentMessageKey)
-          continue
-        }
-        if (previous === currentMessageKey) continue
-        if (blacklist.has(contact.name)) {
-          const firstBlockedThisSession = !this.blockedContacts.has(contact.name)
-          this.blockedContacts.add(contact.name)
-          if (firstBlockedThisSession) this.log('auto_blocked', `已跳过 ${contact.name}：该联系人位于黑名单`, { name: contact.name, reason: 'blacklist' })
-          continue
-        }
-        if (aiDisabledContacts.has(contact.name)) continue // 用户主动关闭：不刷日志、不消费消息
-        if (!canSend(contact.name)) {
-          const noticeKey = `${contact.name}:${localDateKey()}`
-          if (!this.lastLimitNotice.has(noticeKey)) {
-            this.lastLimitNotice.set(noticeKey, Date.now())
-            this.log('send_blocked', `已达到每日发送上限，暂不回复 ${contact.name}`, { name: contact.name })
-          }
-          continue // 保留消息，限额重置后补回
-        }
-        // 角色判定（三层）。最后一条消息的发送方【无法确认】时绝不抢发——
-        // 旧版把 null 当成"对方发的"处理，这是自动回复自言自语循环的直接来源。
-        const fromMe = contact.fromMe === true
-          ? true
-          : incomingIdentity?.role === 'me'
-            ? true
-            : incomingIdentity?.role === 'contact'
-              ? false
-              : await this.isLastMessageFromMe(contact.name)
-        if (fromMe === true) {
-          // 竞态保护：最后一条是"我"但预览像对方媒体时，可能是新消息被盖住——不消费，下轮重查
-          if (shouldDeferConsumptionOnFromMe(contact.preview, this.lastSent.get(contact.name) || '')) {
-            this.log('auto_recheck', `${contact.name} 疑似在我回复期间发来新消息，暂不消费，下轮重查`, { name: contact.name, preview: String(contact.preview || '').slice(0, 60) })
-            continue
-          }
-          this.lastSeen.set(contact.name, currentMessageKey)
-          this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-          continue
-        }
-        if (fromMe !== false) {
-          const noticeKey = `role_unknown:${contact.name}:${currentMessageKey}`
-          if (!this.lastSkipNotice.has(noticeKey)) {
-            this.lastSkipNotice.set(noticeKey, Date.now())
-            this.log('auto_recheck', `无法确认 ${contact.name} 最后一条消息的发送方，本轮不回复，下轮重查`, { name: contact.name })
-          }
-          continue
-        }
-        // 我方回声守卫：预览就是刚发出的内容（或带 AI 标签的回显），绝不再次回复
-        const lastSentText = String(this.lastSent.get(contact.name) || '').replace(/\s+/g, ' ').trim()
-        const previewText = String(contact.preview || '').replace(/\s+/g, ' ').trim()
-        if (lastSentText && (previewText === lastSentText || previewText.startsWith(lastSentText) || previewText.includes('【AI · '))) {
-          this.lastSeen.set(contact.name, currentMessageKey)
-          this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-          continue
-        }
-        // 引擎轮次闸门：同一消息 key 只处理一次；两次自动发送之间有最小间隔
-        const gate = shouldAutoReply(contact, { key: currentMessageKey, fromMe: false })
-        if (!gate.ok) {
-          if (gate.reason === 'already_handled') {
-            this.lastSeen.set(contact.name, currentMessageKey)
-          } else if (gate.reason === 'min_gap') {
-            const noticeKey = `min_gap:${contact.name}`
-            if (!this.lastSkipNotice.has(noticeKey)) {
-              this.lastSkipNotice.set(noticeKey, Date.now())
-              this.log('auto_recheck', `${contact.name} 刚回复过，等待 ${Math.ceil((gate.retryInMs || 0) / 1000)} 秒后再处理`, { name: contact.name })
-            }
-          }
-          continue
-        }
-        const learnedContact = this.recordConversationMessage(contact.name, 'contact', contact.preview, contact, { human: true })
-        // 长期记忆候选：今天尚未提炼的联系人才入列（每天最多一次）
-        if (settings.longTermMemory !== false && this.ai?.mineFacts && learnedContact?.learning?.factsUpdatedAt !== today) {
-          factCandidates.push(learnedContact)
-        }
-        // 话题状态候选：最近一次话题记录早于 2 小时才入列
-        if (this.ai?.summarizeRecentTopic) {
-          const topicLog = Array.isArray(learnedContact?.learning?.topicLog) ? learnedContact.learning.topicLog : []
-          const lastTopicAt = topicLog.length ? new Date(topicLog.at(-1).at).getTime() : 0
-          if (!Number.isFinite(lastTopicAt) || Date.now() - lastTopicAt >= 2 * 60 * 60 * 1000) {
-            topicCandidates.push(learnedContact)
-          }
-        }
-        let replyText = ''
-        let aiAttempted = false
-        let aiDraft = null
-        if (this.ai?.hasProvider?.()) {
-          // AI 失败退避：同联系人连续失败时按指数拉长重试间隔（30s→2min→8min→30min）
-          const backoff = this.aiBackoff.get(contact.name)
-          if (backoff && Date.now() < backoff.retryAt) {
-            if (!this.lastSkipNotice.has(`ai_backoff:${contact.name}`)) {
-              this.lastSkipNotice.set(`ai_backoff:${contact.name}`, Date.now())
-              this.log('ai_backoff', `${contact.name} 的 AI 调用暂缓（${Math.ceil((backoff.retryAt - Date.now()) / 1000)} 秒后重试）`, { name: contact.name })
-            }
-            continue // 不消费，退避结束后重试
-          }
-          aiAttempted = true
-          try {
-            // 打开会话抓取完整可见消息，增强上下文（传入 previous.learning 防止 facts/topicLog 被擦）
-            let enhancedContact = learnedContact
-            try {
-              const chatWin = await this.selectConversation(contact.name)
-              if (chatWin) {
-                const visibleMessages = await this.captureVisibleMessages(chatWin)
-                if (visibleMessages.length > 0) {
-                  const mergedMessages = mergeMessageHistory(learnedContact.learning?.messages, visibleMessages)
-                  const enhancedLearning = this.ai.analyzeConversation(mergedMessages, learnedContact.learning)
-                  enhancedContact = { ...learnedContact, learning: enhancedLearning }
-                }
-              }
-            } catch (_) { /* 抓取失败回退预览文本 */ }
+      const ctx = { config, settings, contacts, today, autoReplyOn, blacklist, aiDisabledContacts, canSend, factCandidates, topicCandidates, isCancelled }
 
-            let mediaCapture = normalizeCapturedMedia([])
-            const mediaKind = mediaPreviewKind(contact.preview)
-            const isMedia = Boolean(mediaKind)
-            let useMediaForReply = isMedia
-            if (isMedia) {
-              if (settings.videoReplyEnabled === false || settings.videoRecognitionEnabled === false) {
-                if (hasReplyablePreviewText(contact.preview)) {
-                  useMediaForReply = false
-                  this.log('media_text_fallback', `${contact.name} 媒体回复已关闭，使用预览文本回复`, { name: contact.name, mediaKind, reason: 'replyable_preview' })
-                } else {
-                  this.log('media_skipped', `${contact.name} 媒体已跳过：视频回复已关闭`, { name: contact.name, mediaKind, reason: 'video_reply_disabled' })
-                  this.lastSeen.set(contact.name, currentMessageKey)
-                  this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-                  continue
-                }
-              } else {
-                try {
-                  const recognition = videoRecognitionOptions(settings)
-                  mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingMedia(contact.name, recognition), mediaKind)
-                  if (shouldUseVideoFrameFallback(recognition, mediaCapture) && this.captureLatestIncomingVideo) {
-                    mediaCapture = normalizeCapturedMedia(await this.captureLatestIncomingVideo(contact.name), mediaKind)
-                  }
-                } catch (_) {}
-              }
-            }
-            const providers = this.storage.get().providers || []
-            const hasAudioTranscript = Boolean(mediaCapture.audioTranscript)
-            const hasPublicContext = hasPublicMediaContext(mediaCapture)
-            if (useMediaForReply && !mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext && hasReplyablePreviewText(contact.preview)) {
-              useMediaForReply = false
-              this.log('media_text_fallback', `${contact.name} 媒体捕获不可用，使用预览文本回复`, { name: contact.name, mediaKind, reason: mediaCapture.reason || 'media_capture_unavailable' })
-            }
-            if (useMediaForReply) {
-              const caps = providers.length ? providers.some(p => (p.capabilities || []).includes('vision')) : Boolean(this.ai?.hasProvider?.())
-              if (!caps && !hasAudioTranscript && !hasPublicContext) {
-                this.log('media_skipped', `${contact.name} 媒体已跳过：模型不支持视觉`, { name: contact.name, mediaKind })
-                this.lastSeen.set(contact.name, currentMessageKey)
-                this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-                continue
-              }
-              const requiresDecodedVideo = mediaKind === 'video' || mediaCapture.detectedVideo === true
-              if (!mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext) {
-                this.log(requiresDecodedVideo ? 'video_unreadable' : 'media_uncertain', `${contact.name} 媒体画面无法捕获`, { name: contact.name, mediaKind })
-                this.lastSeen.set(contact.name, currentMessageKey)
-                this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-                continue
-              }
-            }
-            aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: timeMeta, videoFrames: useMediaForReply ? mediaCapture : undefined })
-            if (aiDraft?.ok && (aiDraft.labeledText || aiDraft.text)) {
-              const model = aiDraft.model || providers?.[0]?.model || '当前模型'
-              const label = aiDraft.aiLabel || `AI · ${model}`
-              const showAiModelLabel = this.storage.get().settings?.showAiModelLabel !== false
-              const generated = String(showAiModelLabel ? (aiDraft.labeledText || aiDraft.text) : aiDraft.text).trim()
-              replyText = showAiModelLabel && !generated.startsWith(`【${label}】`) ? `【${label}】${generated}` : generated
-            }
-          } catch (error) {
-            this.log('ai_error', `为 ${contact.name} 调用 AI 失败`, { name: contact.name, error: error.message })
-            const prevStep = this.aiBackoff.get(contact.name)?.step || 0
-            const step = Math.min(prevStep + 1, 4)
-            const delay = [30000, 120000, 480000, 1800000][step - 1]
-            this.aiBackoff.set(contact.name, { step, retryAt: Date.now() + delay })
-            continue // 不消费，退避后重试
-          }
-        }
-        if (replyText) {
-          try {
-            const mediaKindForReply = mediaPreviewKind(contact.preview)
-            if (mediaKindForReply && isUnavailableMediaReply(replyText)) {
-              this.lastSeen.set(contact.name, currentMessageKey)
-              this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-              this.log('ai_reply_rejected', `${contact.name} 的媒体回复已拦截`, { name: contact.name, mediaKind: mediaKindForReply, text: replyText, reason: 'unavailable_media_reply' })
-              continue
-            }
-            // 草稿模式：AI 生成的回复进入草稿列表等待人工确认
-            if (settings.aiReplyDraftOnly === true) {
-              const drafts = [...(this.storage.get().pendingDrafts || [])]
-              drafts.unshift({ id: Date.now(), at: new Date().toISOString(), name: contact.name, text: replyText + (aiDraft?.text2 ? '\n' + aiDraft.text2 : ''), incoming: String(contact.preview || ''), model: aiDraft?.model || '', provider: aiDraft?.provider || '', status: 'pending' })
-              const capped = drafts.slice(0, 50)
-              this.storage.update({ pendingDrafts: capped })
-              this.emitEvent('drafts', { drafts: capped })
-              this.log('ai_draft_pending', `已为 ${contact.name} 生成 AI 草稿待确认`, { name: contact.name, text: replyText })
-              this.lastSeen.set(contact.name, currentMessageKey)
-              this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-              continue
-            }
-            const aiMeta = aiAttempted ? { ai: true, source: 'ai', model: aiDraft?.model || '', provider: aiDraft?.provider || '', aiLabel: aiDraft?.aiLabel || '' } : { source: 'rule' }
-            // 拟人延迟：AI 回复不秒回，按长度加 1.5–12 秒随机"打字时间"
-            if (aiAttempted) await sleep(humanReplyDelay(replyText))
-            await this.sendMessage(contact.name, replyText, aiMeta)
-            this.aiBackoff.delete(contact.name)
-            this.lastSeen.set(contact.name, currentMessageKey)
-            this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey, lastOutgoingAt: Date.now() }))
-            // 双消息（允许而非必须）：模型补了第二条随口话时紧跟发出；独立容错，
-            // 失败只记日志——首条已送达，轮次已闭环，绝不能因此重发首条
-            const followUp = aiAttempted ? String(aiDraft?.text2 || '') : ''
-            if (followUp) {
-              try {
-                await sleep(humanReplyDelay(followUp))
-                await this.sendMessage(contact.name, followUp, aiMeta)
-              } catch (followError) {
-                this.log('send_error', `第二条消息发送失败（首条已送达，不影响本轮）`, { name: contact.name, error: followError.message })
-              }
-            }
-          } catch (error) {
-            this.log('send_error', `自动回复发送失败：${contact.name}`, { name: contact.name, error: error.message })
-            continue // 不消费，下轮重试
-          }
-        } else if (aiAttempted && aiDraft?.rejected === true) {
-          // 拒发不重试：同一输入重试大概率产出同类内容，直接消费消息（宁可不说）
-          this.lastSeen.set(contact.name, currentMessageKey)
-          this.persistTurn(contact.name, (turn) => ({ ...turn, lastHandledKey: currentMessageKey }))
-        } else if (aiAttempted) {
-          const noticeKey = `ai_empty:${contact.name}:${currentMessageKey}`
-          if (!this.lastSkipNotice.has(noticeKey)) {
-            this.lastSkipNotice.set(noticeKey, Date.now())
-            this.log('ai_empty', `AI 未返回有效回复，保留 ${contact.name} 的消息待重试`, { name: contact.name })
-          }
-          continue // 不消费
-        } else {
-          const noticeKey = `ai_unavailable:${contact.name}:${currentMessageKey}`
-          if (!this.lastSkipNotice.has(noticeKey)) {
-            this.lastSkipNotice.set(noticeKey, Date.now())
-            this.log('ai_unavailable', `未配置可用模型，保留 ${contact.name} 的消息待重试`, { name: contact.name })
-          }
-          continue // 不消费
-        }
-      }
+      // ① 收集：只发现、只入队，不做任何回复动作
+      await this.collectIncoming(contacts, ctx)
+      if (isCancelled()) return
+      // ② 规划 + ③ 执行：先统一判定，再严格串行处理（同一时刻只有一个 AI 调用和一次发送）
+      await this.drainIncomingQueue(ctx)
+      if (isCancelled()) return
+
       const seenArr = [...this.lastSeen].map(([n, p]) => ({ name: n, preview: p, at: Date.now() }))
       if (this.storage?.update) this.storage.update({ lastSeenPairs: seenArr })
 
@@ -3056,7 +3400,10 @@ class DouyinService {
       }
     } finally {
       clearTimeout(watchdog)
+      if (this._currentRunToken === runToken) this._currentRunToken = null
       this.polling = false
+      // 每轮任务结束进入空闲时，顺带检测一次内存卫生（此时无锁、无待发任务，是安全回收的最佳时机）
+      this.runMemoryHygiene().catch(() => {})
     }
   }
 
@@ -3073,6 +3420,7 @@ class DouyinService {
   destroy() {
     if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null }
     if (this._memoryTimer) { clearInterval(this._memoryTimer); this._memoryTimer = null }
+    if (this.incomingQueue instanceof Map) this.incomingQueue.clear()
     if (this._discoveryCleanupTimer) { clearTimeout(this._discoveryCleanupTimer); this._discoveryCleanupTimer = null }
     if (this.window && !this.window.isDestroyed()) {
       this.window.__forceClose = true
@@ -3080,4 +3428,6 @@ class DouyinService {
     }
     if (this.discoveryWindow && !this.discoveryWindow.isDestroyed()) this.discoveryWindow.destroy()
   }
-}module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions }
+}
+
+module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions }
