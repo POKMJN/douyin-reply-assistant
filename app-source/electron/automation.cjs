@@ -1,4 +1,4 @@
-﻿const fs = require('node:fs')
+const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const os = require('node:os')
@@ -789,6 +789,48 @@ const FIND_SEND_TARGET_JS = `(() => {
 
   return null
 })()`
+
+function shouldSleepChatWindow({ config = {}, settings = {}, now = new Date() } = {}) {
+  // 1. 若处于免打扰时段，允许休眠
+  if (settings.quietHours) {
+    const toMinutes = (value) => {
+      const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
+      return match ? Number(match[1]) * 60 + Number(match[2]) : 0
+    }
+    const current = now.getHours() * 60 + now.getMinutes()
+    const start = toMinutes(settings.quietStart || '23:00')
+    const end = toMinutes(settings.quietEnd || '07:00')
+    const muted = start === end || (start < end ? current >= start && current < end : current >= start || current < end)
+    if (muted) return true
+  }
+
+  const autoReplyOn = Boolean(config.autoReply) && !config.paused
+  const hasCompanion = Boolean(settings.proactiveChat?.enabled)
+  const hasSparkWork = (config.sparks || []).some((task) => task && task.enabled)
+
+  // 2. 没有自动回复、没有主动伴聊、也没有续火花：彻底闲置，休眠释放 300MB+ 内存
+  if (!autoReplyOn && !hasCompanion && !hasSparkWork) return true
+
+  // 3. 仅有续火花任务（无实时回复和伴聊）：检查近 10 分钟内是否有即将到来的任务
+  if (!autoReplyOn && !hasCompanion && hasSparkWork) {
+    const today = localDateKey(now)
+    const minutesNow = now.getHours() * 60 + now.getMinutes()
+    const timeToMinutes = (str) => {
+      const [h, m] = String(str || '00:00').split(':').map(Number)
+      return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0)
+    }
+    // 检查是否有今天尚未执行且已经到了执行时间（或即将在 10 分钟内到达）的续火花任务
+    const hasPendingSoon = (config.sparks || []).some((task) => {
+      if (!task || !task.enabled || task.lastRunDate === today) return false
+      const diff = timeToMinutes(task.time) - minutesNow
+      return diff <= 10
+    })
+    // 若所有任务今天已跑完，或距下次触发时间尚早，允许休眠
+    if (!hasPendingSoon) return true
+  }
+
+  return false
+}
 
 class DouyinService {
   constructor({ storage, emit, ai, partition }) {
@@ -3210,6 +3252,11 @@ class DouyinService {
     this.recycleChatWindow()
   }
 
+  // 账号空闲休眠判定：无待办实时消息回复，且近 10 分钟内无续火花任务时，休眠隐藏聊天窗口以节约内存
+  static shouldSleepChatWindow({ config = {}, settings = {}, now = new Date() } = {}) {
+    return shouldSleepChatWindow({ config, settings, now })
+  }
+
   // 重建聊天页：destroy 让渲染进程彻底退出（OS 回收内存），下次轮询按需重建
   recycleChatWindow() {
     const win = this.window
@@ -3229,22 +3276,16 @@ class DouyinService {
     const state = this.storage.get()
     const config = state.automation || {}
     const settings = state.settings || {}
-    if (settings.quietHours) {
-      const toMinutes = (value) => {
-        const match = String(value || '').match(/^(\d{1,2}):(\d{2})$/)
-        return match ? Number(match[1]) * 60 + Number(match[2]) : 0
+
+    // 空闲休眠守卫：若当前处于免打扰时段，或无实时回复需求且近期无续火花任务，休眠隐藏窗口释放 300MB+ 内存
+    if (shouldSleepChatWindow({ config, settings })) {
+      if (this.window && !this.window.isDestroyed() && !this.window.isVisible()) {
+        this.log('window_idle_sleep', '当前账号处于免打扰期或无待办实时任务，已休眠后台聊天窗口以释放内存')
+        this.recycleChatWindow()
       }
-      const now = new Date()
-      const current = now.getHours() * 60 + now.getMinutes()
-      const start = toMinutes(settings.quietStart || '23:00')
-      const end = toMinutes(settings.quietEnd || '07:00')
-      const muted = start === end || (start < end ? current >= start && current < end : current >= start || current < end)
-      if (muted) return
+      return
     }
-    const hasSparkWork = (config.sparks || []).some((task) => task && task.enabled)
-    const hasCompanion = Boolean(settings.proactiveChat?.enabled)
-    const autoReplyOn = Boolean(config.autoReply) && !config.paused
-    if (!autoReplyOn && !hasSparkWork && !hasCompanion) return
+
     const status = await this.getStatus()
     if (!status.connected) return
     if (!this.window || this.window.isDestroyed()) this.ensureWindow(false)
@@ -3383,4 +3424,4 @@ class DouyinService {
     }
     if (this.discoveryWindow && !this.discoveryWindow.isDestroyed()) this.discoveryWindow.destroy()
   }
-}module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions }
+}module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions, shouldSleepChatWindow }

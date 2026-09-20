@@ -48,8 +48,33 @@ if (!hasSingleInstanceLock) app.exit(0)
 // 隐藏聊天页自动播放对方视频会常驻吃 CPU，禁止无手势自动播放
 app.commandLine.appendSwitch('autoplay-policy', 'user-gesture-required')
 
-// 允许主进程调用 global.gc()：内存卫生重建渲染进程后主动触发一次堆回收
-app.commandLine.appendSwitch('js-flags', '--expose-gc')
+// 内存压缩优化：
+// 1. 限制 V8 堆老生代上限为 256MB 并开启 expose-gc，促使引擎积极垃圾回收，防止堆无限制膨胀
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256 --expose-gc')
+
+// 2. 限制渲染子进程数，指示 Chromium 合并辅助进程，避免过多独立子进程常驻
+app.commandLine.appendSwitch('renderer-process-limit', '3')
+
+// 3. 裁剪无用后台组件与网络预加载，关闭后台投屏/诊断/翻译
+app.commandLine.appendSwitch('disable-features', 'MediaRouter,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,Translate')
+app.commandLine.appendSwitch('disable-background-networking')
+app.commandLine.appendSwitch('disable-component-update')
+app.commandLine.appendSwitch('disable-domain-reliability')
+
+// 4. GPU 显存与视频缓冲裁剪：后台隐藏视频不需要超大帧缓冲与额外着色器缓存
+app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames')
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
+
+// Windows 系统级内存工作集轻量修剪
+function trimAppWorkingSet() {
+  if (process.platform !== 'win32') return
+  try {
+    if (typeof global.gc === 'function') global.gc()
+    const cp = require('node:child_process')
+    const psCmd = '$p=Get-Process -Name "抖音回复助手" -ErrorAction SilentlyContinue; if($p){ Add-Type "using System; using System.Runtime.InteropServices; public class M { [DllImport(\\"psapi.dll\\")] public static extern int EmptyWorkingSet(IntPtr h); }"; foreach($x in $p){ try{[M]::EmptyWorkingSet($x.Handle)}catch{} } }'
+    cp.exec(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, { windowsHide: true }, () => {})
+  } catch {}
+}
 
 function imageOrFallback(...names) {
   for (const name of names) {
@@ -105,6 +130,7 @@ function createWindow() {
     if (!isQuitting && getActiveStorage()?.get()?.settings?.minimizeToTray !== false) {
       event.preventDefault()
       mainWindow.hide()
+      setTimeout(trimAppWorkingSet, 1500)
     }
   })
 }
@@ -487,6 +513,9 @@ app.whenReady().then(() => {
   registerAiHandlers()
   createWindow()
   createTray()
+  // 定时执行轻量工作集修剪（启动 30 秒后首跑，之后每 15 分钟一次，配合 global.gc 保持低内存常驻）
+  setTimeout(trimAppWorkingSet, 30000)
+  setInterval(trimAppWorkingSet, 15 * 60 * 1000)
   app.on('activate', () => {
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus() }
     else createWindow()

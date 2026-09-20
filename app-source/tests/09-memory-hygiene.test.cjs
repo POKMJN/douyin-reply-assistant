@@ -3,7 +3,7 @@ const { test } = require('node:test')
 const assert = require('node:assert')
 require('./setup.cjs')
 const electron = require('electron')
-const { DouyinService } = require('../electron/automation.cjs')
+const { DouyinService, shouldSleepChatWindow } = require('../electron/automation.cjs')
 
 function makeService(win) {
   const storage = {
@@ -163,4 +163,91 @@ test('recycleChatWindow：销毁窗口并置空 this.window 以便下次按需�
   svc.recycleChatWindow()
   assert.equal(win.destroyed, true, '窗口应被销毁（渲染进程退出，OS 回收内存）')
   assert.equal(svc.window, null, 'this.window 应置空')
+})
+
+test('shouldSleepChatWindow：空闲休眠与按需唤醒判断', () => {
+  const today = '2026-09-20'
+  const time = (h, m) => new Date(`${today}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`)
+
+  // 1. 免打扰时段开启（23:00~07:00），在凌晨 01:00 应休眠
+  assert.equal(
+    shouldSleepChatWindow({
+      config: { autoReply: true },
+      settings: { quietHours: true, quietStart: '23:00', quietEnd: '07:00' },
+      now: time(1, 0),
+    }),
+    true,
+    '免打扰时段应休眠窗口'
+  )
+
+  // 2. 正常白天，开启自动回复，应保持唤醒以接收实时消息
+  assert.equal(
+    shouldSleepChatWindow({
+      config: { autoReply: true },
+      settings: {},
+      now: time(14, 0),
+    }),
+    false,
+    '正常时段开启自动回复不应休眠'
+  )
+
+  // 3. 彻底无任何任务（autoReply 关，无 companion，无 sparks），应休眠
+  assert.equal(
+    shouldSleepChatWindow({
+      config: { autoReply: false, sparks: [] },
+      settings: {},
+      now: time(14, 0),
+    }),
+    true,
+    '无任何任务应休眠'
+  )
+
+  // 4. 仅有续火花任务（早 08:00 / 10:00），在 14:00 且今日均已执行过（lastRunDate === today），应休眠
+  assert.equal(
+    shouldSleepChatWindow({
+      config: {
+        autoReply: false,
+        sparks: [
+          { enabled: true, time: '08:00', lastRunDate: today },
+          { enabled: true, time: '10:00', lastRunDate: today },
+        ],
+      },
+      settings: {},
+      now: time(14, 0),
+    }),
+    true,
+    '今日续火花已全部执行完毕，应休眠释放 300MB+ 内存'
+  )
+
+  // 5. 仅有续火花任务，当前时间 07:55，距离 08:00 还剩 5 分钟（<= 10 分钟），应唤醒准备
+  assert.equal(
+    shouldSleepChatWindow({
+      config: {
+        autoReply: false,
+        sparks: [
+          { enabled: true, time: '08:00', lastRunDate: '2026-09-19' },
+        ],
+      },
+      settings: {},
+      now: time(7, 55),
+    }),
+    false,
+    '即将到达任务时间（5分钟内），应提前唤醒'
+  )
+
+  // 6. 仅有续火花任务（10:00），当前时间 07:00，还剩 3 小时，应继续休眠
+  assert.equal(
+    shouldSleepChatWindow({
+      config: {
+        autoReply: false,
+        sparks: [
+          { enabled: true, time: '10:00', lastRunDate: '2026-09-19' },
+        ],
+      },
+      settings: {},
+      now: time(7, 0),
+    }),
+    true,
+    '距离任务还远（>10分钟），应休眠'
+  )
 })
