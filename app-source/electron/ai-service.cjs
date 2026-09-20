@@ -388,7 +388,7 @@ function isReasoningLeak(value) {
   return REASONING_START.test(text) && REASONING_META.test(text)
 }
 
-function cleanGeneratedText(value) {
+function cleanGeneratedText(value, maxLen = 120) {
   const raw = String(value || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<\/?\|?thinking\|?>[\s\S]*?<\/?\|?thinking\|?>/gi, '')
@@ -398,22 +398,22 @@ function cleanGeneratedText(value) {
   const clean = raw.replace(/^\s*(?:回复|答复|assistant|AI)\s*[:：]\s*/i, '').trim()
   if (/^(?:\[?不回复\]?|不需要回复|无需回复|不回)$/i.test(clean)) return ''
   const stripped = clean.replace(/\*+/g, '').trim()
-  return stripped.slice(0, 120)
+  return maxLen > 0 ? stripped.slice(0, maxLen) : stripped
 }
 
 const stripTrailingPeriod = (text) => String(text || '').replace(/[。．]\s*$/, '').trim()
 
-function choiceText(out) {
+function choiceText(out, maxLen = 600) {
   const message = out?.choices?.[0]?.message
   if (!message) return ''
   const content = message.content
-  if (typeof content === 'string' && content.trim()) return cleanGeneratedText(content)
-  if (Array.isArray(content)) return cleanGeneratedText(content.map((part) => part?.text || '').join(' '))
+  if (typeof content === 'string' && content.trim()) return cleanGeneratedText(content, maxLen)
+  if (Array.isArray(content)) return cleanGeneratedText(content.map((part) => part?.text || '').join(' '), maxLen)
   const reasoning = String(message.reasoning_content || message.reasoning || '')
   if (reasoning.trim()) {
     if (isReasoningLeak(reasoning)) return ''
     const tail = reasoning.split(/\n+/).filter((line) => line.trim()).pop() || reasoning
-    const cleaned = cleanGeneratedText(tail)
+    const cleaned = cleanGeneratedText(tail, maxLen)
     if (!cleaned || isReasoningLeak(cleaned)) return ''
     return cleaned
   }
@@ -769,9 +769,54 @@ function clampCasualText(text, max = 40) {
   return head.trimEnd()
 }
 
-const isReasoningModel = (model) => /deepseek|reasoner|\br1\b|thinking/i.test(String(model || ''))
+const isReasoningModel = (model) => /deepseek|reasoner|\br1\b|thinking|gemini|qwq|\bo[13]\b|claude-3-7/i.test(String(model || ''))
 const replyMaxTokens = (model) => (isReasoningModel(model) ? 2000 : 1000)
+const sparkMaxTokens = (model) => (isReasoningModel(model) ? 3500 : 2000)
 const isMaxTokensReject = (error) => Number(error?.statusCode) === 400 && /max_tokens|maximum context|too large/i.test(String(error?.message || ''))
+
+// 今日播报（晨间问候）截断残句检测：结尾以逗号、顿号、悬挂动宾/介连词、未完数字结尾，或者末尾缺少自然收束
+function isTruncatedSpark(text) {
+  const value = String(text || '').trim()
+  if (!value) return true
+  // 1. 悬挂标点
+  if (/[,，、:：]$/.test(value)) return true
+  // 2. 悬挂连词/助词/动词/副词（如：下着小、记得带、出门、现在、而且、因为、所以、比如、以及、与、和、到、对、向、为、从）
+  if (/(?:[着在了的与和到对向于为给被从小中把又还也但并而且因为所以虽然但是以及比如例如才剛刚出进上带拿现在今天明天])$/.test(value)) return true
+  // 3. 悬挂裸数字（如 12306、2026）
+  if (/\d+$/.test(value)) return true
+  // 4. 长度超过 15 字但末尾没有任何句末标点（。！？!?~～），且不是合法的轻语气词收束（如：呀、哈、呢、吧、哦、噢、啦）
+  const hasEndPunct = /[。！？!?~～]$/.test(value)
+  const hasModalParticle = /[呀哈呢吧哦噢啦]$/.test(value)
+  if (!hasEndPunct && !hasModalParticle) return true
+  return false
+}
+
+// 今日播报安全收尾：确保即使在极端截断或长度溢出时，也必定保持语义通顺，绝不吐半句
+function safeFinishSparkMessage(text, max = 130) {
+  let value = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!value) return ''
+  if ([...value].length <= max && !isTruncatedSpark(value)) return value
+  const chars = [...value]
+  const head = chars.slice(0, max).join('')
+  // 尝试在最后一个合法自然句结尾截断
+  const sentenceCut = Math.max(
+    head.lastIndexOf('。'),
+    head.lastIndexOf('！'),
+    head.lastIndexOf('？'),
+    head.lastIndexOf('~'),
+    head.lastIndexOf('～')
+  )
+  if (sentenceCut >= 18) {
+    const candidate = head.slice(0, sentenceCut + 1).trim()
+    if (!isTruncatedSpark(candidate)) return candidate
+  }
+  // 否则剥离掉末尾悬挂的残词/逗号，补上一句贴心收尾祝福
+  const commaCut = Math.max(head.lastIndexOf('，'), head.lastIndexOf(','))
+  let base = commaCut >= 15 ? head.slice(0, commaCut).trim() : head
+  base = base.replace(/[,，、:：着在了的与和到对向于为给被从小中把又还也但并而且因为所以虽然但是以及比如例如才剛刚出进上带拿现在今天明天\d]+$/, '').trim()
+  if (!base) return value.slice(0, 40)
+  return `${base}，今天也要照顾好自己呀~`
+}
 
 function multipartBody(fields, file) {
   const boundary = `----xusheng-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -862,7 +907,8 @@ function buildSparkPrompt({ contact = {}, contactMsgs = [], ownerMsgs = [], tone
 
 要求：
 - 语气严格按你对这位联系人的说话习惯来写，保持你们一贯的亲密度；不要突然陌生、客套或过分热情。
-- 只输出 1 条消息（可以把上面内容自然串成 2 到 4 个短句，总长不超过 90 字），口语化，不要 Markdown、引号、列表，也不要堆砌 emoji。
+- 只输出 1 条消息（把上面内容自然串成 2 到 3 个短句，总长控制在 50 到 90 字左右），口语化，不要 Markdown、引号、列表，也不要堆砌 emoji。
+- 完整性要求（极其关键）：必须一口气完整写完！必须包含开头的日常问候、中间的天气关照或热点互动，以及结尾温暖的轻短祝福。严禁在半路中断截断，绝不能留下未说完的半截句子！
 - 注意区分：下面【你最近发过的消息】是你（账号本人）自己发的，【对方最近的消息】是对方发的；千万不要把自己的话当成对方的话，也不要在消息里复述或转述。
 - 只说真实信息：天气/热点只能用上面提供的内容，不要编造温度、事件或"刚刷到"的经历；没有的数据就跳过那一项，绝不含糊带过。
 - 善意底线：不嘲讽任何真实的人的困境或身份选择（留守、贫困、疾病、外貌、家庭等），不用攻击性或粗俗语言；玩笑不踩在具体的人身上。
@@ -1093,7 +1139,8 @@ class AiService {
     for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
-        out = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature, max_tokens: maxTokens }))
+        const targetTokens = isReasoningModel(candidate.model) ? Math.max(maxTokens, 3500) : Math.max(maxTokens, 2000)
+        out = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature, max_tokens: targetTokens }))
         if (!choiceText(out)) throw new Error('模型接口已响应，但没有返回有效的回复内容')
         provider = candidate
         this.noteProviderSuccess(provider)
@@ -1105,7 +1152,7 @@ class AiService {
       }
     }
     if (!provider || !out) throw lastError || new Error('没有可用的 AI 模型')
-    return { text: cleanGeneratedText(choiceText(out)), model: provider.model, provider: provider.name, aiLabel: aiLabel(provider) }
+    return { text: cleanGeneratedText(choiceText(out, 600), 600), model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), finishReason: out?.choices?.[0]?.finish_reason }
   }
 
   async summarizeComments(comments = []) {
@@ -1515,10 +1562,11 @@ class AiService {
     const otherOpeners = todaysSparkOpeners().filter((item) => item.name !== (contact?.name || '')).map((item) => item.text)
     // crossConflict（跨联系人群发查重）定义在下方 stripBroadcast 之后：剥离播报事实后比较
     const instruction = buildSparkPrompt({ contact, contactMsgs, ownerMsgs, tone, note, recentOpeners, crossOpeners: otherOpeners, weather, hotTopic })
+    const tokenBudget = sparkMaxTokens(providers[0]?.model)
     const generate = (extraWarning = '') => this.inquiryCompletion([
       { role: 'system', content: instruction },
       { role: 'user', content: `现在请生成今天的问候消息。${extraWarning}` },
-    ], { temperature: 0.75, maxTokens: 700 })
+    ], { temperature: 0.75, maxTokens: tokenBudget })
     let result
     try {
       result = await generate()
@@ -1528,7 +1576,7 @@ class AiService {
       await sleep(retryDelayMs)
       result = await generate()
     }
-    let text = cleanGeneratedText(result.text || '')
+    let text = cleanGeneratedText(result.text || '', 300)
     // 播报子句剥离：天气措施类词汇是开放集合（带伞/防晒/保暖/雾霾/补水/适宜出行……），
     // 枚举单词永远不完备——改为按子句剥离：一个子句里出现任何天气/问候/祝福语素，
     // 整个子句都视为"按设计每天重复的播报内容"，不参与复读判定（2026-09-13 用户指出枚举局限）。
@@ -1546,14 +1594,24 @@ class AiService {
       || /续火花|打卡/.test(value)
       || isHollowOrMeta(value)
       || repeatsOpeners(value)
+    // 截断与残句检测：若未写完或因 token 上限中断，必须重新生成
+    const isTruncated = (value, res) => isTruncatedSpark(value) || res?.finishReason === 'length'
     // 跨联系人群发查重：剥离播报子句后比较（事实允许一致，表达不允许雷同）
     const crossConflict = (value) => otherOpeners.some((opener) => sharesLongSubstring(stripBroadcast(value), stripBroadcast(opener), 10))
-    if (isRobotic(text) || crossConflict(text)) {
-      const why = [isRobotic(text) ? '像模板、复读或机械表达' : '', crossConflict(text) ? '和今天发给其他朋友的开场太像，像群发' : ''].filter(Boolean).join('，')
-      const retry = await generate(`注意：刚才那条${why}。直接输出要发送的那一句话本身，不要输出任何分析、要求或解释；不要输出"我们需要生成……"这类思考过程；换一个完全不同的切入角度、句式和问候方式，重新写。`)
-      const retryText = cleanGeneratedText(retry.text || '')
-      if (retryText && !isRobotic(retryText) && !crossConflict(retryText)) {
+    if (isRobotic(text) || crossConflict(text) || isTruncated(text, result)) {
+      const why = [
+        isTruncated(text, result) ? '在末尾被意外截断了（只输出了半句，缺少结尾祝福）' : '',
+        isRobotic(text) ? '像模板、复读或机械表达' : '',
+        crossConflict(text) ? '和今天发给其他朋友的开场太像，像群发' : '',
+      ].filter(Boolean).join('，')
+      const retry = await generate(`注意：刚才那条${why}。直接输出要发送的那一句话本身，不要输出任何分析或解释；不要输出"我们需要生成……"这类思考过程；务必一口气完整写完，包括开头的问候、天气/热点关照以及结尾轻短祝福，严禁截断只输出半句！换一个完全不同的切入角度、句式和问候方式，重新写。`)
+      const retryText = cleanGeneratedText(retry.text || '', 300)
+      if (retryText && !isRobotic(retryText) && !crossConflict(retryText) && !isTruncated(retryText, retry)) {
         text = retryText
+        result = retry
+      } else if (retryText && !isRobotic(retryText) && !crossConflict(retryText)) {
+        // 重试后仍有轻微残缺时进行安全收尾
+        text = safeFinishSparkMessage(retryText, 130)
         result = retry
       }
     }
@@ -1570,7 +1628,8 @@ class AiService {
       this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的开场与今天发给其他朋友的开场过于相似（群发感），已拦截拒发`, detail: { rejectedText: String(text).slice(0, 80) } })
       throw new Error('开场与今日其他开场重复，已拦截拒发')
     }
-    text = stripTrailingPeriod(clampCasualText(text, 90))
+    // 采用专用的播报安全收尾：放宽至 130 字，遇到末尾未收束时安全修补，绝不断半截
+    text = stripTrailingPeriod(safeFinishSparkMessage(text, 130))
     recordSparkOpener(contact?.name || '', text)
     this.storage.addLog({ type: 'ai_spark_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 问候文案`, detail: { elapsedMs: Date.now() - started, model: result.model, provider: result.provider } })
     return { ok: true, text, model: result.model, provider: result.provider, aiLabel: result.aiLabel, elapsedMs: Date.now() - started }
@@ -1729,4 +1788,6 @@ module.exports = {
   topicMemoryBlock,
   mediaContextBlock,
   appendMediaLog,
+  isTruncatedSpark,
+  safeFinishSparkMessage,
 }

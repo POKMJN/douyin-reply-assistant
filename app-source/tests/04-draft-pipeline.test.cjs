@@ -489,3 +489,47 @@ test('summarizeRecentTopic：输出被消毒后写入', async () => {
   assert.ok(!/\d+\./.test(text), '分点编号被剥除')
   assert.ok(!text.includes('关系温度似乎是'))
 })
+
+test('今日播报截断检测：精准识别被吃掉一半的残缺文本', () => {
+  const { isTruncatedSpark, safeFinishSparkMessage } = require('../electron/ai-service.cjs')
+  // 生产环境 2026-09-20 晨间真实报错样本
+  const realTruncatedSamples = [
+    '乔治早上好！9月20号周日降到20来度还下着小',
+    '早呀，今天9月20周日，外头飘着小雨才20来度，出门记得带',
+    '周日早啊，今天20到24度还飘着小雨，出门记得带把伞。现在',
+    '边台早，9月20号周日降到20多度还下着小雨，出门带',
+    '醒啦？今天9月20号周日，外头飘着小雨才20来度，能见度',
+    '勤，早啊！9月20号周日落着小雨，才20多度，出门记得带把伞',
+    '起没呢？周日这边有点小雨降到20度出头，出门记得带伞。12306',
+  ]
+  for (const sample of realTruncatedSamples) {
+    assert.equal(isTruncatedSpark(sample), true, `必须精准捕获残句：${sample}`)
+    const repaired = safeFinishSparkMessage(sample)
+    assert.ok(!isTruncatedSpark(repaired), `修补后必须是完整句子：${repaired}`)
+    assert.ok(repaired.endsWith('~') || /[。！？]$/.test(repaired), `修补后必须有合法收尾：${repaired}`)
+  }
+  // 完整播报放行
+  assert.equal(isTruncatedSpark('乔治早上好！今天降温下小雨，出门记得带伞。祝你周末愉快呀~'), false)
+  assert.equal(isTruncatedSpark('早呀，今天周日天气不错，出门走走挺舒服的。祝你今天心情好！'), false)
+})
+
+test('今日播报截断自愈：首轮模型吐出半句时触发重写，写完整才放行', async () => {
+  const contact = makeContact()
+  const storage = createMemoryStorage({ providers: [PROVIDER], contacts: [contact] })
+  let callCount = 0
+  const transport = async () => {
+    callCount += 1
+    if (callCount === 1) {
+      // 模拟首轮思考链耗尽 token 导致被 API 强制切断
+      return { choices: [{ message: { content: '乔治早上好！9月20号周日降到20来度还下着小' }, finish_reason: 'length' }] }
+    }
+    // 重试后完整输出
+    return { choices: [{ message: { content: '乔治早上好！今天周日降到20来度还飘小雨，出门记得带把伞，今天也要照顾好自己呀~' }, finish_reason: 'stop' }] }
+  }
+  const ai = new AiService(storage, { transport })
+  const result = await ai.draftSparkMessage({ contact, task: {}, weather: '今天20度小雨', retryDelayMs: 1 })
+  assert.equal(callCount, 2, '首轮半截话必须触发重试')
+  assert.ok(result.text.includes('照顾好自己'), `重试后应输出完整祝福：${result.text}`)
+  assert.ok(!result.text.endsWith('还下着小'), '绝不发出半截残句')
+})
+
