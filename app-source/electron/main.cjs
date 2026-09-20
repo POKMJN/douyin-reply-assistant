@@ -104,12 +104,24 @@ function imageOrFallback(...names) {
   return nativeImage.createEmpty()
 }
 
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+  }
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  // Windows 前台锁定绕过：置顶唤醒并聚焦后解除置顶
+  mainWindow.setAlwaysOnTop(true)
+  mainWindow.focus()
+  mainWindow.setAlwaysOnTop(false)
+}
+
 app.on('second-instance', (_event, argv) => {
   if (hasBytedanceUrl(argv)) return // 协议探测启动，静默吞掉
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show()
-    mainWindow.focus()
-  }
+  showMainWindow()
 })
 
 function createWindow() {
@@ -191,11 +203,12 @@ function createTray() {
   tray = new Tray(icon.resize({ width: 16, height: 16 }))
   tray.setToolTip('抖音回复助手')
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示抖音回复助手', click: () => { mainWindow?.show(); mainWindow?.focus() } },
+    { label: '显示抖音回复助手', click: () => showMainWindow() },
     { type: 'separator' },
     { label: '退出', click: () => { isQuitting = true; app.quit() } },
   ]))
-  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus() })
+  tray.on('click', () => showMainWindow())
+  tray.on('double-click', () => showMainWindow())
 }
 
 ipcMain.handle('app:info', () => ({
@@ -537,8 +550,7 @@ app.whenReady().then(() => {
   setTimeout(trimAppWorkingSet, 30000)
   setInterval(trimAppWorkingSet, 15 * 60 * 1000)
   app.on('activate', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus() }
-    else createWindow()
+    showMainWindow()
   })
 })
 
