@@ -65,14 +65,34 @@ app.commandLine.appendSwitch('disable-domain-reliability')
 app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames')
 app.commandLine.appendSwitch('disable-gpu-shader-disk-cache')
 
-// Windows 系统级内存工作集轻量修剪
+// Windows 系统级内存工作集轻量修剪（调用 psapi.dll!EmptyWorkingSet 刷出物理工作集）
+const TRIM_PS_SCRIPT = `
+$p = Get-Process -Name '抖音回复助手' -ErrorAction SilentlyContinue
+if ($p) {
+  $d = @'
+using System;
+using System.Runtime.InteropServices;
+public static class WinMem {
+  [DllImport("psapi.dll")]
+  public static extern int EmptyWorkingSet(IntPtr h);
+}
+'@
+  if (-not ([System.Management.Automation.PSTypeName]'WinMem').Type) {
+    try { Add-Type -TypeDefinition $d } catch {}
+  }
+  foreach ($x in $p) {
+    try { [WinMem]::EmptyWorkingSet($x.Handle) } catch {}
+  }
+}
+`
+const TRIM_B64_CMD = Buffer.from(TRIM_PS_SCRIPT, 'utf16le').toString('base64')
+
 function trimAppWorkingSet() {
   if (process.platform !== 'win32') return
   try {
     if (typeof global.gc === 'function') global.gc()
     const cp = require('node:child_process')
-    const psCmd = '$p=Get-Process -Name "抖音回复助手" -ErrorAction SilentlyContinue; if($p){ Add-Type "using System; using System.Runtime.InteropServices; public class M { [DllImport(\\"psapi.dll\\")] public static extern int EmptyWorkingSet(IntPtr h); }"; foreach($x in $p){ try{[M]::EmptyWorkingSet($x.Handle)}catch{} } }'
-    cp.exec(`powershell -NoProfile -NonInteractive -Command "${psCmd}"`, { windowsHide: true }, () => {})
+    cp.exec(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${TRIM_B64_CMD}`, { windowsHide: true }, () => {})
   } catch {}
 }
 
