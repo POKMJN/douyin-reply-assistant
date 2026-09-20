@@ -3319,6 +3319,7 @@ class DouyinService {
     try {
       const { contacts } = await this.syncContacts()
       const today = localDateKey()
+      const autoReplyOn = Boolean(config.autoReply) && !config.paused
       const blacklist = new Set((config.blacklist || []).map((name) => String(name).trim()).filter(Boolean))
       const aiDisabledContacts = new Set((config.aiDisabledContacts || []).map((name) => String(name).trim()).filter(Boolean))
       const canSend = (name) => !blacklist.has(name) && this.getSendAllowance(name).ok
