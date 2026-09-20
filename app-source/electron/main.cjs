@@ -157,6 +157,12 @@ function createWindow() {
     })
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.once('ready-to-show', () => {
+    if (!settings.startMinimized) {
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  })
   mainWindow.on('closed', () => { mainWindow = null })
   mainWindow.on('close', (event) => {
     if (!isQuitting && getActiveStorage()?.get()?.settings?.minimizeToTray !== false) {
