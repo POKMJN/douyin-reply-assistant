@@ -388,6 +388,21 @@ function isReasoningLeak(value) {
   return REASONING_START.test(text) && REASONING_META.test(text)
 }
 
+function stripAiPrefix(text) {
+  let val = String(text || '').trim()
+  while (true) {
+    const next = val
+      .replace(/^【\s*AI\s*[·•\-:][^】]*】\s*/i, '')
+      .replace(/^\[\s*AI\s*[·•\-:][^\]]*\]\s*/i, '')
+      .replace(/^【\s*AI[ ·•\w.-]*$/i, '')
+      .replace(/^\[\s*AI[ ·•\w.-]*$/i, '')
+      .trim()
+    if (next === val) break
+    val = next
+  }
+  return val
+}
+
 function cleanGeneratedText(value, maxLen = 120) {
   const raw = String(value || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -395,13 +410,14 @@ function cleanGeneratedText(value, maxLen = 120) {
     .replace(/```(?:\w+)?\s*/g, '')
     .replace(/\s+/g, ' ')
     .trim()
-  const clean = raw.replace(/^\s*(?:回复|答复|assistant|AI)\s*[:：]\s*/i, '').trim()
+  const unPrefixed = stripAiPrefix(raw)
+  const clean = unPrefixed.replace(/^\s*(?:回复|答复|assistant|AI)\s*[:：]\s*/i, '').trim()
   if (/^(?:\[?不回复\]?|不需要回复|无需回复|不回)$/i.test(clean)) return ''
   const stripped = clean.replace(/\*+/g, '').trim()
   return maxLen > 0 ? stripped.slice(0, maxLen) : stripped
 }
 
-const stripTrailingPeriod = (text) => String(text || '').replace(/[。．]\s*$/, '').trim()
+const stripTrailingPeriod = (text) => String(text || '').replace(/[。．，,、:：\-–—\s]+$/, '').trim()
 
 function choiceText(out, maxLen = 600) {
   const message = out?.choices?.[0]?.message
@@ -439,7 +455,10 @@ function labelAiReply(text, provider) {
 function normalizeLearnedMessages(messages) {
   if (!Array.isArray(messages)) return []
   return messages
-    .map((item) => ({ role: item?.role === 'me' ? 'me' : 'contact', text: String(item?.text || '').replace(/\s+/g, ' ').trim().slice(0, 500) }))
+    .map((item) => ({
+      role: item?.role === 'me' ? 'me' : 'contact',
+      text: stripAiPrefix(String(item?.text || '')).replace(/\s+/g, ' ').trim().slice(0, 500),
+    }))
     .filter((item) => item.text && !/^(已读|未读|\d{1,2}:\d{2})$/.test(item.text))
     .filter((item) => !isReasoningLeak(item.text))
     .slice(-60)
@@ -517,6 +536,9 @@ function replyQualityIssues(reply, isVideo = false, allowEmoji = true) {
   if ((text.match(/[?？]/g) || []).length > 2) issues.push('问句太多，像连环追问')
   if ((text.match(/\p{Extended_Pictographic}/gu) || []).length > 2) issues.push('表情过多')
   if (!allowEmoji && /\p{Extended_Pictographic}/u.test(text)) issues.push('本次不需要使用表情')
+  if (/^【[^】]*$/.test(text) || /^\[[^\]]*$/.test(text) || /^【\s*AI/i.test(text) || /^\[\s*AI/i.test(text)) issues.push('包含残缺标签或未完成截断')
+  if (/[,，、:：\-–—]$/.test(text)) issues.push('末尾挂起未完结标点')
+  if (!/[\u4e00-\u9fa5]/.test(text) && text.length < 20 && !/^(ok|hi|hello|hhh+|haha|lol|666)/i.test(text)) issues.push('缺少有效对话内容')
   if (isVideo) {
     if (/^这个(视频|也太|真的|确实|好)/.test(text)) issues.push('以"这个…"开头，缺少具体指向')
     // 泛泛评价检测不用 \b 包中文（\b 对汉字无效），改用具体性词豁免
@@ -549,6 +571,7 @@ function isHollowOrMeta(text) {
   if (!value) return true
   if (HOLLOW_RE.test(value)) return true
   if (META_LEAK_RE.test(value)) return true
+  if (/^【[^】]*$/.test(value) || /^\[[^\]]*$/.test(value) || /^【\s*AI/i.test(value)) return true
   return false
 }
 
@@ -604,7 +627,7 @@ function isMediaPlaceholder(text) {
 function realChatTexts(recent, role, limit) {
   return (Array.isArray(recent) ? recent : [])
     .filter((item) => item.role === role)
-    .map((item) => String(item?.text || '').trim())
+    .map((item) => stripAiPrefix(String(item?.text || '')).trim())
     .filter((text) => text && !isMediaPlaceholder(text))
     .slice(-limit)
 }
@@ -1424,7 +1447,7 @@ class AiService {
           { role: 'assistant', content: text },
           { role: 'user', content: `上一条候选回复有这些问题：${initialQualityIssues.join('、')}。请保留话题和已知事实，改成更像熟人私信的一条自然短回复。如果问题涉及攻击性语言或对他人处境的刻薄评判，必须彻底去掉，换成善意、松弛的表达。不要新增事实，不要解释，只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 50 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
         const revisedText = cleanGeneratedText(choiceText(revised))
         if (revisedText && replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).length < initialQualityIssues.length) {
           text = revisedText
@@ -1435,7 +1458,7 @@ class AiService {
       }
     }
     // 终检：攻击性/刻薄/空壳/元话语/Markdown 残留 → 整条拒发（宁可不说）
-    const finalIssues = replyQualityIssues(text, hasMediaContext, contactWithTone._allowEmoji).filter((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown/.test(issue))
+    const finalIssues = replyQualityIssues(text, hasMediaContext, contactWithTone._allowEmoji).filter((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown|残缺标签|未完结标点|缺少有效对话/.test(issue))
     if (finalIssues.length) {
       this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复未通过终检被拦截拒发`, detail: { rejectedText: text, issues: finalIssues, rewritten, model: provider.model } })
       return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
@@ -1451,9 +1474,9 @@ class AiService {
           { role: 'assistant', content: text },
           { role: 'user', content: `你写的这句是客服腔/说明文，完全不像熟人在抖音私信里说话（问题：${softIssues.join('、')}）。请彻底重写成一句熟人随口说的话：保留话题，1 句、5 到 20 个字，禁止"我理解你的感受""听起来你""感谢你的分享""如果你愿意"这类表达，不要解释，只输出正文。${emojiGuidance(contactWithTone)}` },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.7, max_tokens: 50 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.7, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
         const revisedText = cleanGeneratedText(choiceText(revised))
-        if (revisedText && !replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).some((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown|AI 腔|说明性前缀/.test(issue))) {
+        if (revisedText && !replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).some((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown|AI 腔|说明性前缀|残缺标签|未完结标点|缺少有效对话/.test(issue))) {
           text = revisedText
           rewritten = true
         } else {
@@ -1470,7 +1493,7 @@ class AiService {
     // 连续复读守卫：上一轮已经发过同样的话时（低信息消息连发最容易触发），
     // 带上"你刚说过"的提醒重写一次；重写仍重复则保留改写前的较短版本不强求。
     const historyMsgs = normalizeLearnedMessages(contactWithTone.learning?.messages)
-    const lastMine = (historyMsgs.filter((m) => m.role === 'me').at(-1)?.text || '').replace(/^【[^】]*】/, '')
+    const lastMine = stripAiPrefix(historyMsgs.filter((m) => m.role === 'me').at(-1)?.text || '')
     if (lastMine && (text === lastMine || sharesLongSubstring(text, lastMine, 5))) {
       try {
         const base = apiBase(provider.baseUrl)
@@ -1479,7 +1502,7 @@ class AiService {
           { role: 'assistant', content: text },
           { role: 'user', content: `你上一条已经发过「${lastMine.slice(0, 30)}」，这句和它重复了。换个角度重新回一句，不要重复上一条的内容和句式；只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.9, max_tokens: 50 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.9, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
         const revisedText = cleanGeneratedText(choiceText(revised))
         if (revisedText && !(revisedText === lastMine || sharesLongSubstring(revisedText, lastMine, 5))) {
           text = revisedText
@@ -1502,7 +1525,7 @@ class AiService {
           { role: 'assistant', content: text },
           { role: 'user', content: `你刚发出一句「${text.slice(0, 30)}」。像真人连发消息那样，紧跟着再补一条更短的随口话：可以是半句话、一个词或一个表情，与第一句有关但不要重复它的内容和句式，也不要开新话题。只输出这第二 条消息本身。` },
         ]
-        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 40 }), { retries: 0, timeoutMs: 10000 })
+        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 80 }), { retries: 0, timeoutMs: 10000 })
         const t2 = cleanGeneratedText(choiceText(revised2))
         if (t2 && !isReasoningLeak(t2) && !isHollowOrMeta(t2) && !sharesLongSubstring(t2, text, 4) && replyQualityIssues(t2, hasMediaContext, contactWithTone._allowEmoji).length === 0) {
           text2 = stripTrailingPeriod(clampCasualText(t2, 24))
@@ -1790,4 +1813,5 @@ module.exports = {
   appendMediaLog,
   isTruncatedSpark,
   safeFinishSparkMessage,
+  stripAiPrefix,
 }

@@ -6,7 +6,7 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { spawn } = require('node:child_process')
 const { BrowserWindow, session } = require('electron')
-const { analyzeLanguageStyle, daysSinceContact, factText, fetchWeatherContext, fetchHotTopicsCached, hotTopicForSparkCached } = require('./ai-service.cjs')
+const { analyzeLanguageStyle, daysSinceContact, factText, fetchWeatherContext, fetchHotTopicsCached, hotTopicForSparkCached, stripAiPrefix } = require('./ai-service.cjs')
 const { shouldAutoReply, dailyMessageKey } = require('./conversation-engine.cjs')
 
 const CHAT_URL = 'https://www.douyin.com/chat?isPopup=1'
@@ -3126,8 +3126,9 @@ class DouyinService {
           const model = aiDraft.model || providers?.[0]?.model || '当前模型'
           const label = aiDraft.aiLabel || `AI · ${model}`
           const showAiModelLabel = this.storage.get().settings?.showAiModelLabel !== false
-          const generated = String(showAiModelLabel ? (aiDraft.labeledText || aiDraft.text) : aiDraft.text).trim()
-          replyText = showAiModelLabel && !generated.startsWith(`【${label}】`) ? `【${label}】${generated}` : generated
+          const rawGenerated = String(showAiModelLabel ? (aiDraft.labeledText || aiDraft.text) : aiDraft.text).trim()
+          const cleanText = stripAiPrefix(rawGenerated)
+          replyText = showAiModelLabel ? (cleanText ? `【${label}】${cleanText}` : '') : cleanText
         }
       } catch (error) {
         this.log('ai_error', `为 ${contact.name} 调用 AI 失败`, { name: contact.name, error: error.message })

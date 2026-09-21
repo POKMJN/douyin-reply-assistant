@@ -5,7 +5,7 @@ require('./setup.cjs')
 const {
   isReasoningLeak, cleanGeneratedText, replyQualityIssues, clampCasualText,
   stripTrailingPeriod, isNoReplyDecision, isHollowOrMeta, hasEthicsIssue,
-  isLowInfoComment, isMediaPlaceholder, choiceText,
+  isLowInfoComment, isMediaPlaceholder, choiceText, stripAiPrefix,
 } = require('../electron/ai-service.cjs')
 
 test('思考泄漏检测：分析式开头 × 任务元词汇双命中才判泄漏', () => {
@@ -87,9 +87,28 @@ test('clampCasualText：超长在句末标点收束', () => {
   assert.equal(clampCasualText('短的回复', 40), '短的回复')
 })
 
-test('stripTrailingPeriod 只剥句号', () => {
+test('stripTrailingPeriod 剥离句号及悬挂未完结标点', () => {
   assert.equal(stripTrailingPeriod('好的。'), '好的')
   assert.equal(stripTrailingPeriod('好的！'), '好的！')
+  assert.equal(stripTrailingPeriod('火花续上啦，'), '火花续上啦')
+  assert.equal(stripTrailingPeriod('好的-'), '好的')
+  assert.equal(stripTrailingPeriod('好的：'), '好的')
+})
+
+test('stripAiPrefix：剥除各种完整与残缺 AI 标签', () => {
+  assert.equal(stripAiPrefix('【AI · gemini-3.8-flash】早呀'), '早呀')
+  assert.equal(stripAiPrefix('【AI · gemini-'), '')
+  assert.equal(stripAiPrefix('[AI · gpt-5.5] 你好'), '你好')
+  assert.equal(stripAiPrefix('【AI · gemini-3.8-flash】【AI · gemini-'), '')
+  assert.equal(stripAiPrefix('【AI · gemini-3.8-flash】【AI · gemini-3.8-flash】好的'), '好的')
+  assert.equal(cleanGeneratedText('【AI · gemini-3.8-flash】哈哈太扎心了'), '哈哈太扎心了')
+  assert.equal(cleanGeneratedText('【AI · gemini-'), '')
+})
+
+test('replyQualityIssues：拦截残缺标签与挂起标点', () => {
+  assert.ok(replyQualityIssues('【AI · gemini-').some((i) => i.includes('残缺标签')))
+  assert.ok(replyQualityIssues('火花续上啦，').some((i) => i.includes('未完结标点')))
+  assert.ok(replyQualityIssues('AI gemini-').some((i) => i.includes('缺少有效对话')))
 })
 
 test('isLowInfoComment：纯笑声/打卡/纯 emoji 不进 prompt', () => {
