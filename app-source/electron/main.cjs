@@ -126,6 +126,8 @@ app.on('second-instance', (_event, argv) => {
 
 function createWindow() {
   const settings = getActiveStorage()?.get()?.settings || {}
+  const isHiddenArg = process.argv.includes('--hidden')
+  const shouldStartHidden = Boolean(settings.startMinimized) || isHiddenArg
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -135,7 +137,7 @@ function createWindow() {
     icon: assetPath('app-icon.png'),
     title: '抖音回复助手',
     autoHideMenuBar: true,
-    show: !settings.startMinimized,
+    show: !shouldStartHidden,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -158,7 +160,7 @@ function createWindow() {
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.once('ready-to-show', () => {
-    if (!settings.startMinimized) {
+    if (!shouldStartHidden) {
       mainWindow.show()
       mainWindow.focus()
     }
@@ -175,7 +177,12 @@ function createWindow() {
 
 function applySystemSettings(settings = {}) {
   if (process.platform === 'win32') {
-    app.setLoginItemSettings({ openAtLogin: Boolean(settings.launchOnStartup), openAsHidden: Boolean(settings.startMinimized) })
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(settings.launchOnStartup),
+      openAsHidden: Boolean(settings.startMinimized),
+      path: process.execPath,
+      args: Boolean(settings.startMinimized) ? ['--hidden'] : [],
+    })
   }
 }
 

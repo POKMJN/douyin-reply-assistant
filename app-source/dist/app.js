@@ -612,6 +612,9 @@ function settingsView() {
         <div class="field"><label>开机自启</label><select data-path="settings.launchOnStartup">
           <option value="off" ${!st.launchOnStartup ? 'selected' : ''}>关闭</option><option value="on" ${st.launchOnStartup ? 'selected' : ''}>开启</option>
         </select></div>
+        <div class="field"><label>静默启动</label><select data-path="settings.startMinimized">
+          <option value="off" ${!st.startMinimized ? 'selected' : ''}>关闭（正常弹出主窗口）</option><option value="on" ${st.startMinimized ? 'selected' : ''}>开启（静默最小化到托盘）</option>
+        </select></div>
         <div class="field"><label>关闭窗口时</label><select data-path="settings.minimizeToTray">
           <option value="on" ${st.minimizeToTray !== false ? 'selected' : ''}>最小化到托盘</option><option value="off" ${st.minimizeToTray === false ? 'selected' : ''}>退出程序</option>
         </select></div>
