@@ -348,10 +348,12 @@ out = out.replace(
 
 // 4.5) sendAiSparkTask：抓取今日天气与热点，注入"今日播报"式续火花
 out = out.replace(
+  "    let text = ''\n    let aiMeta = {}",
+  "    let text = ''\n    let aiMeta = {}\n    let sparkWeather = ''\n    let sparkHotTopic = ''",
+)
+out = out.replace(
   "      const draft = await this.ai.draftSparkMessage({ contact, task })",
-  `      let sparkWeather = ''
-      let sparkHotTopic = ''
-      try { await fetchHotTopicsCached() } catch { /* 热点抓取失败不阻塞，热点段落自动跳过 */ }
+  `      try { await fetchHotTopicsCached() } catch { /* 热点抓取失败不阻塞，热点段落自动跳过 */ }
       try { sparkWeather = await fetchWeatherContext(this.storage) } catch { sparkWeather = '' }
       try { sparkHotTopic = hotTopicForSparkCached() } catch { sparkHotTopic = '' }
       const draft = await this.ai.draftSparkMessage({ contact, task, weather: sparkWeather, hotTopic: sparkHotTopic })`,
@@ -365,7 +367,7 @@ out = out.replace(
   `    if (!text) {
       const hourNow = new Date().getHours()
       const greeting = hourNow < 11 ? '早上好呀' : hourNow < 14 ? '中午好' : hourNow < 18 ? '下午好' : '晚上好'
-      text = sparkWeather ? \`\${greeting}，\${sparkWeather}。照顾好自己呀\` : (String(task?.message || '').trim() || \`\${greeting}，今天也要照顾好自己呀\`)
+      text = sparkWeather ? \`\${greeting}，\${sparkWeather}，今天也要照顾好自己呀～\` : (String(task?.message || '').trim() || \`\${greeting}，今天也要照顾好自己呀～\`)
       aiMeta = { source: 'spark_text' }
     }`,
 )

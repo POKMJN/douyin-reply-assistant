@@ -2375,14 +2375,14 @@ class DouyinService {
     const contact = (state.contacts || []).find((item) => item.name === name)
     let text = ''
     let aiMeta = {}
+    let sparkWeather = ''
+    let sparkHotTopic = ''
     if (this.ai?.draftSparkMessage) {
       try {
-        let sparkWeather = ''
-      let sparkHotTopic = ''
-      try { await fetchHotTopicsCached() } catch { /* 热点抓取失败不阻塞，热点段落自动跳过 */ }
-      try { sparkWeather = await fetchWeatherContext(this.storage) } catch { sparkWeather = '' }
-      try { sparkHotTopic = hotTopicForSparkCached() } catch { sparkHotTopic = '' }
-      const draft = await this.ai.draftSparkMessage({ contact, task, weather: sparkWeather, hotTopic: sparkHotTopic })
+        try { await fetchHotTopicsCached() } catch { /* 热点抓取失败不阻塞，热点段落自动跳过 */ }
+        try { sparkWeather = await fetchWeatherContext(this.storage) } catch { sparkWeather = '' }
+        try { sparkHotTopic = hotTopicForSparkCached() } catch { sparkHotTopic = '' }
+        const draft = await this.ai.draftSparkMessage({ contact, task, weather: sparkWeather, hotTopic: sparkHotTopic })
         if (draft?.ok && draft.text) {
           text = String(draft.text).trim()
           aiMeta = { source: 'ai_spark', ai: true, model: draft.model || '', provider: draft.provider || '', aiLabel: draft.aiLabel || 'AI' }
@@ -2394,7 +2394,7 @@ class DouyinService {
     if (!text) {
       const hourNow = new Date().getHours()
       const greeting = hourNow < 11 ? '早上好呀' : hourNow < 14 ? '中午好' : hourNow < 18 ? '下午好' : '晚上好'
-      text = sparkWeather ? `${greeting}，${sparkWeather}。照顾好自己呀` : (String(task?.message || '').trim() || `${greeting}，今天也要照顾好自己呀`)
+      text = sparkWeather ? `${greeting}，${sparkWeather}，今天也要照顾好自己呀～` : (String(task?.message || '').trim() || `${greeting}，今天也要照顾好自己呀～`)
       aiMeta = { source: 'spark_text' }
     }
     await this.sendMessage(name, text, aiMeta)
