@@ -1125,7 +1125,7 @@ document.addEventListener('change', async (event) => {
   let value = el.value
   if (el.type === 'checkbox') value = el.checked
   else if (el.tagName === 'SELECT') value = value === 'on' ? true : value === 'off' ? false : value
-  else if (/^\d+$/.test(value) && /Limit|Interval|Minutes|Retention|PerDay/.test(path)) value = Number(value)
+  else if (/^\d+(\.\d+)?$/.test(value) && /Chance|Limit|Interval|Minutes|Retention|PerDay/.test(path)) value = Number(value)
   const patch = {}
   setPath(patch, path, value)
   await saveState(patch)

@@ -125,3 +125,53 @@ test('addLog 遵守开关与上限', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('JsonStorage partial update 深度合并：单项设置修改不抹除其他配置', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dra-partial-'))
+  try {
+    const storage = new JsonStorage(dir)
+    // 初始状态
+    assert.equal(storage.get().settings.launchOnStartup, false)
+    assert.equal(storage.get().settings.minimizeToTray, true)
+    assert.equal(storage.get().settings.videoRecognitionMode, 'smart')
+    assert.equal(storage.get().settings.proactiveChat.maxPerDay, 2)
+    assert.equal(storage.get().automation.autoReply, false)
+    assert.equal(storage.get().appearance.theme, 'auto')
+
+    // 1. 修改单个 setting（如前端仅发送 { settings: { launchOnStartup: true } }）
+    storage.update({ settings: { launchOnStartup: true } })
+    assert.equal(storage.get().settings.launchOnStartup, true)
+    assert.equal(storage.get().settings.minimizeToTray, true, '其他设置项未被抹除')
+    assert.equal(storage.get().settings.videoRecognitionMode, 'smart', '其他设置项未被抹除')
+    assert.equal(storage.get().settings.proactiveChat.maxPerDay, 2, '嵌套对象未被抹除')
+
+    // 2. 修改嵌套 setting（如主动搭讪开关）
+    storage.update({ settings: { proactiveChat: { enabled: true } } })
+    assert.equal(storage.get().settings.proactiveChat.enabled, true)
+    assert.equal(storage.get().settings.proactiveChat.maxPerDay, 2, 'proactiveChat 同级默认字段保留')
+    assert.equal(storage.get().settings.launchOnStartup, true, '前一步设置保持生效')
+
+    // 3. 修改 automation 部分字段
+    storage.update({ automation: { dailyLimit: 88 } })
+    assert.equal(storage.get().automation.dailyLimit, 88)
+    assert.equal(storage.get().automation.autoReply, false, 'autoReply 未被抹除')
+    assert.deepEqual(storage.get().automation.sparks, [], 'sparks 未被抹除')
+
+    // 4. 修改 appearance 部分字段
+    storage.update({ appearance: { theme: 'dark' } })
+    assert.equal(storage.get().appearance.theme, 'dark')
+    assert.equal(storage.get().appearance.defaultTone, '', 'defaultTone 保持')
+
+    // 5. 重新实例化（模拟冷重启），验证持久化到磁盘依然正确完整
+    const reloaded = new JsonStorage(dir)
+    assert.equal(reloaded.get().settings.launchOnStartup, true)
+    assert.equal(reloaded.get().settings.minimizeToTray, true)
+    assert.equal(reloaded.get().settings.proactiveChat.enabled, true)
+    assert.equal(reloaded.get().settings.proactiveChat.maxPerDay, 2)
+    assert.equal(reloaded.get().automation.dailyLimit, 88)
+    assert.equal(reloaded.get().appearance.theme, 'dark')
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+

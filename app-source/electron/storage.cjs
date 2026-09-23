@@ -75,6 +75,25 @@ const cleanLegacyLogEntry = (entry) => {
   return cleanLegacyLogValue({ ...entry })
 }
 
+function isPlainObject(item) {
+  return item !== null && typeof item === 'object' && !Array.isArray(item)
+}
+
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return target
+  const output = { ...(target || {}) }
+  for (const key of Object.keys(source)) {
+    const srcVal = source[key]
+    const tgtVal = target ? target[key] : undefined
+    if (isPlainObject(srcVal) && isPlainObject(tgtVal)) {
+      output[key] = deepMerge(tgtVal, srcVal)
+    } else {
+      output[key] = srcVal
+    }
+  }
+  return output
+}
+
 // 迁移：旧版 state.json → v2。宽容读取（旧字段存在即剥离），学习数据原样保留。
 function migrateLegacy(input) {
   const saved = input && typeof input === 'object' ? input : {}
@@ -91,8 +110,12 @@ function migrateLegacy(input) {
     blacklist: Array.isArray(legacyAutomation.blacklist) ? legacyAutomation.blacklist : [],
     aiDisabledContacts: Array.isArray(legacyAutomation.aiDisabledContacts) ? legacyAutomation.aiDisabledContacts : [],
   }
-  const appearance = { theme: saved.appearance?.theme === 'dark' ? 'dark' : (saved.appearance?.theme === 'light' ? 'light' : 'auto'), defaultTone: String(saved.appearance?.defaultTone || '') }
+  const appearance = {
+    theme: saved.appearance?.theme === 'dark' ? 'dark' : (saved.appearance?.theme === 'light' ? 'light' : 'auto'),
+    defaultTone: String(saved.appearance?.defaultTone || '')
+  }
   const contacts = (Array.isArray(saved.contacts) ? saved.contacts : []).map(normalizeContact).filter(Boolean)
+  const savedSettings = saved.settings || {}
   return {
     ...structuredClone(defaults),
     contacts,
@@ -106,7 +129,14 @@ function migrateLegacy(input) {
     lastSentPairs: Array.isArray(saved.lastSentPairs) ? saved.lastSentPairs : [],
     appearance,
     automation,
-    settings: { ...defaults.settings, ...(saved.settings || {}) },
+    settings: {
+      ...defaults.settings,
+      ...savedSettings,
+      proactiveChat: {
+        ...defaults.settings.proactiveChat,
+        ...(savedSettings.proactiveChat || {}),
+      },
+    },
   }
 }
 
@@ -148,7 +178,7 @@ class JsonStorage {
   }
 
   update(patch) {
-    this.state = { ...this.state, ...patch }
+    this.state = deepMerge(this.state, patch || {})
     const tempPath = `${this.filePath}.tmp`
     try {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true })

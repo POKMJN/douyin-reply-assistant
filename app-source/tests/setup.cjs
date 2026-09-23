@@ -11,6 +11,25 @@ if (!Module.__xushengStubbed) {
   Module.__xushengStubbed = true
 }
 
+function isPlainObject(item) {
+  return item !== null && typeof item === 'object' && !Array.isArray(item)
+}
+
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return target
+  const output = { ...(target || {}) }
+  for (const key of Object.keys(source)) {
+    const srcVal = source[key]
+    const tgtVal = target ? target[key] : undefined
+    if (isPlainObject(srcVal) && isPlainObject(tgtVal)) {
+      output[key] = deepMerge(tgtVal, srcVal)
+    } else {
+      output[key] = srcVal
+    }
+  }
+  return output
+}
+
 // 内存存储桩（实现 JsonStorage 的最小接口）
 function createMemoryStorage(initial = {}) {
   let state = {
@@ -33,7 +52,7 @@ function createMemoryStorage(initial = {}) {
   }
   return {
     get: () => structuredClone(state),
-    update(patch) { state = { ...state, ...patch }; return structuredClone(state) },
+    update(patch) { state = deepMerge(state, patch || {}); return structuredClone(state) },
     addLog(entry) { state.logs = [{ id: Date.now(), at: new Date().toISOString(), ...entry }, ...state.logs].slice(0, 150); return structuredClone(state) },
     _raw: () => state,
   }
