@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const { JsonStorage, normalizeContact } = require('./storage.cjs')
 const { SharedProvidersStore } = require('./providers-store.cjs')
 const { DouyinService } = require('./automation.cjs')
-const { AiService, fetchWeatherContext, fetchHotTopicsCached, hotTopicForSparkCached, normalizeBaseUrl } = require('./ai-service.cjs')
+const { AiService, fetchWeatherContext, fetchHotTopicsCached, hotTopicForSparkCached, normalizeBaseUrl, setGlobalWeatherCity, clearWeatherCache } = require('./ai-service.cjs')
 const { checkUpdate } = require('./update-service.cjs')
 
 let mainWindow
@@ -427,7 +427,19 @@ ipcMain.handle('automation:update', (_event, config) => {
   const entry = getActiveServices()
   if (!entry) throw new Error('本机配置尚未加载，请重试')
   const next = entry.storage.update(config || {})
-  if (config?.settings) applySystemSettings(next.settings)
+  if (config?.settings) {
+    applySystemSettings(next.settings)
+    if (Object.prototype.hasOwnProperty.call(config.settings, 'weatherCity')) {
+      const city = String(config.settings.weatherCity || '').trim()
+      setGlobalWeatherCity(city)
+      clearWeatherCache()
+      for (const [id, s] of services.entries()) {
+        if (s?.storage && s !== entry) {
+          s.storage.update({ settings: { weatherCity: city } })
+        }
+      }
+    }
+  }
   entry.douyin?.startWorker()
   return { ok: true, state: next }
 })
@@ -514,6 +526,14 @@ function registerAiHandlers() {
     const result = await entry.ai.draftSparkMessage({ contact, task: payload?.task || {}, weather, hotTopic })
     return { ...result, weatherUsed: weather, hotTopicUsed: hotTopic }
   }))
+  ipcMain.handle('ai:get-weather', guarded(async (customCity) => {
+    const entry = getActiveServices()
+    const targetCity = typeof customCity === 'string' && customCity.trim() ? customCity.trim() : (entry?.storage?.get()?.settings?.weatherCity || '')
+    if (targetCity) setGlobalWeatherCity(targetCity)
+    clearWeatherCache()
+    const text = await fetchWeatherContext(entry?.storage || { get: () => ({ settings: { weatherCity: targetCity } }) })
+    return { ok: true, text, city: targetCity }
+  }))
   ipcMain.handle('ai:get-skills', guarded(() => ({ ok: true, skills: getActiveStorage().get().aiSkills || [] })))
   ipcMain.handle('ai:save-skills', guarded((skills) => getActiveServices().ai.saveSkills(skills)))
   ipcMain.handle('ai:import-skills', guarded((rawText) => getActiveServices().ai.importSkills(rawText)))
@@ -555,6 +575,22 @@ app.whenReady().then(() => {
   providersStore = new SharedProvidersStore(app.getPath('userData'))
   for (const item of index.list) startAccountServices(item.id)
   activeAccount = (index.active && services.has(index.active)) ? index.active : (index.list[0]?.id || null)
+
+  // 跨账号同步天气城市配置（保证本机全局生效）
+  let globalCity = ''
+  for (const item of index.list) {
+    const sCity = services.get(item.id)?.storage?.get()?.settings?.weatherCity
+    if (sCity && !globalCity) globalCity = sCity
+  }
+  if (globalCity) {
+    setGlobalWeatherCity(globalCity)
+    for (const [id, s] of services.entries()) {
+      if (s?.storage && !s.storage.get()?.settings?.weatherCity) {
+        s.storage.update({ settings: { weatherCity: globalCity } })
+      }
+    }
+  }
+
   getActiveStorage()?.addLog?.({ type: 'app_boot', message: `抖音回复助手 v${app.getVersion()} 已启动`, detail: { version: app.getVersion() } })
   registerAiHandlers()
   createWindow()

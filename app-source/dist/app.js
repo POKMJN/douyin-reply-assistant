@@ -43,6 +43,7 @@ const S = {
   basePreviewTimer: null,
   sparkEditing: null, // null 关闭；'new' 新建
   lastDraftsCount: -1,
+  weatherPreview: '',
   train: { name: '', log: [], draft: null, lastIncoming: '' },
 }
 
@@ -650,7 +651,13 @@ function settingsView() {
         <div class="field"><label>视频回复</label><select data-path="settings.videoReplyEnabled">
           <option value="on" ${st.videoReplyEnabled !== false ? 'selected' : ''}>开启</option><option value="off" ${st.videoReplyEnabled === false ? 'selected' : ''}>关闭</option>
         </select></div>
-        <div class="field"><label>天气城市（续火花今日播报，留空自动定位）</label><input data-path="settings.weatherCity" value="${esc(st.weatherCity || '')}" placeholder="如：成都" /></div>
+        <div class="field"><label>天气城市（续火花今日播报，留空自动定位）</label>
+          <div class="row" style="gap:6px">
+            <input data-path="settings.weatherCity" id="setting-weather-city" value="${esc(st.weatherCity || '')}" placeholder="如：银川" style="flex:1" />
+            <button class="btn small" data-act="test-weather">测试天气</button>
+          </div>
+          ${S.weatherPreview ? `<div class="muted" style="margin-top:4px;font-size:12px;color:var(--text-dim)">${esc(S.weatherPreview)}</div>` : ''}
+        </div>
         <div class="field"><label>识别模式</label><select data-path="settings.videoRecognitionMode">
           <option value="smart" ${st.videoRecognitionMode !== 'comments' && st.videoRecognitionMode !== 'lite' ? 'selected' : ''}>智能（先理解再回复）</option>
           <option value="comments" ${st.videoRecognitionMode === 'comments' ? 'selected' : ''}>轻量（仅文案与评论）</option>
@@ -1050,6 +1057,23 @@ const ACTIONS = {
       if (!result?.text) throw new Error(result?.error || 'AI 没有返回内容')
       S.train.draft = result.text
       S.train.log.push({ role: 'ai', text: result.text })
+      render()
+    })
+  },
+
+  async 'test-weather'(args, btn) {
+    await run(btn, async () => {
+      const input = document.getElementById('setting-weather-city')
+      const city = (input ? input.value : (S.data?.settings?.weatherCity || '')).trim()
+      showNotice(city ? `正在查询「${city}」天气...` : '正在查询当前定位天气...')
+      const res = await api.ai.getWeather(city)
+      if (res?.success && res.text) {
+        S.weatherPreview = `实时天气：${res.text}`
+        showNotice(`获取成功：${res.text}`)
+      } else {
+        S.weatherPreview = `获取失败：${res?.error || '无法解析天气'}`
+        showNotice(S.weatherPreview, 'err')
+      }
       render()
     })
   },

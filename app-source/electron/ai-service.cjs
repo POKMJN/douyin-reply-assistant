@@ -202,22 +202,37 @@ function resolveFestival(date) {
   return floatingFestival(date)
 }
 
-// ---- 今日天气（wttr.in 免费接口，按本地日期缓存一整天；失败负缓存 30 分钟）----
+// ---- 今日天气（wttr.in 免费接口，按本地日期+城市缓存一整天；失败负缓存 30 分钟）----
 // 续火花"今日播报"需要真实天气：温度区间 + 是否带伞（降雨概率≥40%）+ 是否注意遮阳（紫外线≥6）
 const WEATHER_DESC_ZH = {
   sunny: '晴', clear: '晴', 'partly cloudy': '多云', cloudy: '阴', overcast: '阴',
-  'light drizzle': '小雨', 'light rain': '小雨', 'patchy rain nearby': '零星小雨',
+  'light drizzle': '小雨', 'light rain': '小雨', 'patchy rain nearby': '局部小雨',
+  'patchy rain possible': '可能有小雨', 'patchy light drizzle': '零星小雨',
   'moderate rain': '中雨', 'heavy rain': '大雨', 'patchy light rain': '零星小雨',
-  thunderstorm: '雷阵雨', 'light thunderstorm': '弱雷阵雨', mist: '薄雾', fog: '雾', haze: '霾',
+  'moderate rain at times': '阵雨', 'heavy rain at times': '短时大雨',
+  thunderstorm: '雷阵雨', 'light thunderstorm': '弱雷阵雨', 'thundery outbreaks possible': '局地雷雨',
+  mist: '薄雾', fog: '雾', haze: '霾',
   'light snow': '小雪', snow: '雪', 'moderate snow': '中雪', 'heavy snow': '大雪', sleet: '雨夹雪',
 }
-const weatherCache = new Map() // dateKey -> { text, fetchedAt, failedUntil }
-function weatherFromJ1(j1) {
+const weatherCache = new Map() // `${dateKey}:${city}` -> { text, fetchedAt, failedUntil }
+let globalWeatherCity = ''
+
+function setGlobalWeatherCity(city) {
+  globalWeatherCity = String(city || '').trim()
+}
+function getGlobalWeatherCity() {
+  return globalWeatherCity
+}
+function clearWeatherCache() {
+  weatherCache.clear()
+}
+
+function weatherFromJ1(j1, targetCity = '') {
   try {
     const today = j1.weather[0]
     const areaRaw = String(j1.nearest_area?.[0]?.areaName?.[0]?.value || '').trim()
-    // wttr.in 的 nearest_area 常返回拼音/英文，模型会据此脑补城市名；地区名只在含中文时可信
-    const area = /[\u4e00-\u9fa5]/.test(areaRaw) ? areaRaw : ''
+    // 优先使用用户配置的中文城市名；未配置时若 wttr.in 返回了中文则使用，英文/拼音则跳过避免乱填
+    const area = String(targetCity || '').trim() || (/[\u4e00-\u9fa5]/.test(areaRaw) ? areaRaw : '')
     const minC = Math.round(Number(today.mintempC))
     const maxC = Math.round(Number(today.maxtempC))
     const hours = Array.isArray(today.hourly) ? today.hourly : []
@@ -225,8 +240,8 @@ function weatherFromJ1(j1) {
     const maxUV = Math.max(0, ...hours.map((h) => Number(h.UVIndex) || 0))
     const maxWind = Math.max(0, ...hours.map((h) => Number(h.windspeedKmph) || 0))
     const peak = hours.reduce((best, h) => ((Number(h.chanceofrain) || 0) > (Number(best?.chanceofrain) || 0) ? h : best), hours[0])
-    const descRaw = String(peak?.weatherDesc?.[0]?.value || '').toLowerCase()
-    const descZh = WEATHER_DESC_ZH[descRaw] || ''
+    const descRaw = String(peak?.weatherDesc?.[0]?.value || '').trim().toLowerCase()
+    const descZh = WEATHER_DESC_ZH[descRaw] || WEATHER_DESC_ZH[descRaw.replace(/\s+/g, ' ')] || ''
     const parts = [`${area ? `${area}今天 ` : '今天 '}${minC}~${maxC}°C${descZh ? `，${descZh}` : ''}`]
     if (maxRain >= 40) parts.push(`白天降雨概率约 ${maxRain}%，出门记得带伞`)
     if (maxUV >= 6) parts.push(`紫外线较强（指数 ${maxUV}），注意遮阳防晒`)
@@ -240,20 +255,25 @@ function weatherFromJ1(j1) {
     const visibilities = hours.map((h) => Number(h.visibility) || 0).filter((v) => v > 0)
     const minVis = visibilities.length ? Math.min(...visibilities) : 99
     if (minVis <= 2) parts.push('能见度偏低，出行注意安全')
-    return { text: parts.join('；'), maxRain, maxUV }
+    return { text: parts.join('；'), maxRain, maxUV, area, minC, maxC, descZh }
   } catch { return { text: '' } }
 }
+
 async function fetchWeatherContext(storage) {
-  const key = sparkOpenerDateKey()
+  let city = String(storage?.get?.()?.settings?.weatherCity || '').trim()
+  if (!city && globalWeatherCity) city = globalWeatherCity
+  const key = `${sparkOpenerDateKey()}:${(city || 'auto').toLowerCase()}`
   const cached = weatherCache.get(key)
   if (cached && (cached.text || cached.failedUntil > Date.now())) return cached.text
   try {
-    const city = String(storage.get().settings?.weatherCity || '').trim()
     const url = `https://wttr.in/${encodeURIComponent(city)}?format=j1&lang=zh`
     const j1 = await requestJson(url, { method: 'GET', headers: { 'User-Agent': 'curl/8' } }, undefined, { retries: 1, timeoutMs: 8000 })
-    const { text } = weatherFromJ1(j1)
-    weatherCache.set(key, { text, fetchedAt: Date.now() })
-    return text
+    const { text } = weatherFromJ1(j1, city)
+    if (text) {
+      weatherCache.set(key, { text, fetchedAt: Date.now() })
+      return text
+    }
+    return ''
   } catch {
     weatherCache.set(key, { text: '', fetchedAt: Date.now(), failedUntil: Date.now() + 30 * 60 * 1000 })
     return ''
@@ -1824,4 +1844,7 @@ module.exports = {
   isTruncatedSpark,
   safeFinishSparkMessage,
   stripAiPrefix,
+  setGlobalWeatherCity,
+  getGlobalWeatherCity,
+  clearWeatherCache,
 }

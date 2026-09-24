@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('desktopApp', {
     saveSkills: (skills) => ipcRenderer.invoke('ai:save-skills', skills),
     importSkills: (rawText) => ipcRenderer.invoke('ai:import-skills', rawText),
     clearLearning: (name) => ipcRenderer.invoke('ai:clear-learning', name),
+    getWeather: (city) => ipcRenderer.invoke('ai:get-weather', city),
   },
   onDouyinEvent: (listener) => {
     const handler = (_event, payload) => listener(payload)
