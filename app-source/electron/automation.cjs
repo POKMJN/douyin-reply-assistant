@@ -744,6 +744,18 @@ function mergeMessageHistory(previous, visible) {
   return [...oldMessages, ...newMessages.slice(overlap)].slice(-80)
 }
 
+function isConversationTargetMatch(target, activeName, headerText) {
+  const clean = (s) => String(s || '').trim()
+  const t = clean(target)
+  const a = clean(activeName)
+  const h = clean(headerText)
+  if (!t) return false
+  if (!a && !h) return true
+  if (a && (a === t || a.includes(t) || t.includes(a))) return true
+  if (h && (h.includes(t) || t.includes(h))) return true
+  return false
+}
+
 const EDITOR_SELECTOR = `[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder], [class*="chat" i] [contenteditable="true"], [class*="message" i] [contenteditable="true"], textarea[placeholder], [contenteditable="true"]`
 
 const FIND_SEND_TARGET_JS = `(() => {
@@ -1516,43 +1528,135 @@ class DouyinService {
 
   async selectConversation(name) {
     const win = await this.waitForChatReady()
+    const targetName = String(name || '').trim()
+    if (!targetName) throw new Error('联系人名称不能为空')
+
+    // 检查当前是否已经停留在目标会话上（且右侧编辑器就绪）
+    const initialCheck = await win.webContents.executeJavaScript(`(() => {
+      const target = ${JSON.stringify(targetName)}
+      const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
+      if (!editor || document.querySelector('[class*="RightPanelEmpty"]')) return { isAlreadyTarget: false }
+
+      const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
+      const rows = wrapper ? [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"]')] : []
+      let activeName = ''
+      for (const row of rows) {
+        const cls = String(row.className || '') + ' ' + [...row.children].map(c => c.className || '').join(' ')
+        if (/(?:^|[\\s_-])(active|selected|current|focus|is-active)(?:[\\s_-]|$)/i.test(cls) || row.getAttribute('aria-selected') === 'true') {
+          activeName = ((row.innerText || '').split(/\\n+/)[0] || '').trim()
+          break
+        }
+      }
+      const headers = [...document.querySelectorAll('[class*="imChatHeader" i], [class*="ChatHeader" i], [class*="chatHeader" i], [class*="headerTitle" i], [class*="chatTitle" i], [class*="conversationTitle" i], [class*="RightPanel" i] [class*="header" i], [class*="RightPanel" i] [class*="title" i], [class*="name" i]')]
+        .filter(n => {
+          const r = n.getBoundingClientRect()
+          return r.left > 200 && r.top >= 0 && r.top <= 120 && r.width > 20 && r.height > 10
+        })
+      const headerText = headers.map(n => (n.innerText || n.textContent || '').trim()).join(' ')
+
+      const matchActive = activeName && (activeName === target || activeName.includes(target) || target.includes(activeName))
+      const matchHeader = headerText && (headerText.includes(target) || target.includes(headerText))
+      return {
+        isAlreadyTarget: Boolean(matchActive || matchHeader),
+        activeName,
+        headerText
+      }
+    })()`).catch(() => null)
+
+    if (initialCheck?.isAlreadyTarget) return win
+
     const point = await win.webContents.executeJavaScript(`(() => {
-      const target = ${JSON.stringify(name)}
+      const target = ${JSON.stringify(targetName)}
       const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
       if (!wrapper) return null
       const rows = [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"]')]
       const row = rows.find(node => ((node.innerText || '').split(/\\n+/)[0] || '').trim() === target)
         || rows.find(node => (node.innerText || '').includes(target))
       if (!row) return null
+      row.scrollIntoView({ block: 'nearest' })
       const rect = row.getBoundingClientRect()
       return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }
     })()`)
     if (!point) throw new Error(`没有在当前私信列表中找到联系人：${name}`)
+
     win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
     win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
     win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
+
     const started = Date.now()
-    let usedDomFallback = false
-    while (Date.now() - started < 5000) {
-      const selected = await win.webContents.executeJavaScript(`(() => {
+    let lastDomClickAt = 0
+    let lastActiveName = ''
+    while (Date.now() - started < 6000) {
+      const check = await win.webContents.executeJavaScript(`(() => {
+        const target = ${JSON.stringify(targetName)}
         const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
-        return Boolean(editor && !document.querySelector('[class*="RightPanelEmpty"]'))
-      })()`).catch(() => false)
-      if (selected) return win
-      if (!usedDomFallback && Date.now() - started >= 600) {
-        usedDomFallback = true
+        const hasEmpty = Boolean(document.querySelector('[class*="RightPanelEmpty"]'))
+        if (!editor || hasEmpty) return { ready: false, reason: 'editor_not_ready' }
+
+        const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
+        const rows = wrapper ? [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"]')] : []
+        let activeName = ''
+        for (const row of rows) {
+          const cls = String(row.className || '') + ' ' + [...row.children].map(c => c.className || '').join(' ')
+          if (/(?:^|[\\s_-])(active|selected|current|focus|is-active)(?:[\\s_-]|$)/i.test(cls) || row.getAttribute('aria-selected') === 'true') {
+            activeName = ((row.innerText || '').split(/\\n+/)[0] || '').trim()
+            break
+          }
+        }
+
+        const headers = [...document.querySelectorAll('[class*="imChatHeader" i], [class*="ChatHeader" i], [class*="chatHeader" i], [class*="headerTitle" i], [class*="chatTitle" i], [class*="conversationTitle" i], [class*="RightPanel" i] [class*="header" i], [class*="RightPanel" i] [class*="title" i], [class*="name" i]')]
+          .filter(n => {
+            const r = n.getBoundingClientRect()
+            return r.left > 200 && r.top >= 0 && r.top <= 120 && r.width > 20 && r.height > 10
+          })
+        const headerText = headers.map(n => (n.innerText || n.textContent || '').trim()).join(' ')
+
+        const isTargetMatch = (activeName && (activeName === target || activeName.includes(target) || target.includes(activeName)))
+          || (headerText && (headerText.includes(target) || target.includes(headerText)))
+
+        // 强防线：如果当前选中的名字明确是其他人，绝对不能放行！
+        const isOthers = (activeName && activeName !== target && !activeName.includes(target) && !target.includes(activeName))
+          || (headerText && !headerText.includes(target) && rows.some(r => {
+            const n = ((r.innerText || '').split(/\\n+/)[0] || '').trim()
+            return n && n !== target && headerText.includes(n)
+          }))
+
+        if (isOthers && !isTargetMatch) {
+          return { ready: false, activeName, headerText, isOthers: true }
+        }
+
+        if (isTargetMatch) {
+          return { ready: true, activeName, headerText }
+        }
+
+        return { ready: false, activeName, headerText, isOthers: false }
+      })()`).catch(() => null)
+
+      if (check?.ready) return win
+      if (check?.activeName) lastActiveName = check.activeName
+
+      // 若未切换成功，每隔 500ms 重试一次 DOM 点击
+      if (Date.now() - lastDomClickAt >= 500) {
+        lastDomClickAt = Date.now()
         await win.webContents.executeJavaScript(`(() => {
-          const target = ${JSON.stringify(name)}
+          const target = ${JSON.stringify(targetName)}
           const rows = [...document.querySelectorAll('[class*="conversationConversationItemwrapper"]')]
           const row = rows.find(node => ((node.innerText || '').split(/\\n+/)[0] || '').trim() === target)
+            || rows.find(node => (node.innerText || '').includes(target))
           if (!row) return false
+          row.scrollIntoView({ block: 'nearest' })
           row.click()
+          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+          row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
+          row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
           return true
         })()`).catch(() => false)
       }
-      await sleep(200)
+
+      await sleep(150)
     }
-    throw new Error(`点击联系人后抖音没有打开右侧聊天面板：${name}`)
+
+    throw new Error(`点击联系人后未成功切换到目标聊天窗口：期望“${targetName}”，当前停留在“${lastActiveName || '其他会话'}”`)
   }
 
   async captureLatestIncomingMessageIdentity(name, sourceWindow = null) {
@@ -2541,6 +2645,32 @@ class DouyinService {
     let value = String(text).trim()
     const win = await this.selectConversation(name)
     await this.waitForEditor(win)
+    // 二重防御：断言当前右侧激活会话与目标联系人相符，绝对严禁跨会话串发
+    const activeCheck = await win.webContents.executeJavaScript(`(() => {
+      const target = ${JSON.stringify(String(name).trim())}
+      const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
+      const rows = wrapper ? [...wrapper.querySelectorAll('[class*="conversationConversationItemwrapper"]')] : []
+      let activeName = ''
+      for (const row of rows) {
+        const cls = String(row.className || '') + ' ' + [...row.children].map(c => c.className || '').join(' ')
+        if (/(?:^|[\\s_-])(active|selected|current|focus|is-active)(?:[\\s_-]|$)/i.test(cls) || row.getAttribute('aria-selected') === 'true') {
+          activeName = ((row.innerText || '').split(/\\n+/)[0] || '').trim()
+          break
+        }
+      }
+      const headers = [...document.querySelectorAll('[class*="imChatHeader" i], [class*="ChatHeader" i], [class*="chatHeader" i], [class*="headerTitle" i], [class*="chatTitle" i], [class*="conversationTitle" i], [class*="RightPanel" i] [class*="header" i], [class*="RightPanel" i] [class*="title" i], [class*="name" i]')]
+        .filter(n => {
+          const r = n.getBoundingClientRect()
+          return r.left > 200 && r.top >= 0 && r.top <= 120 && r.width > 20 && r.height > 10
+        })
+      const headerText = headers.map(n => (n.innerText || n.textContent || '').trim()).join(' ')
+      const isTargetMatch = (!activeName && !headerText) || (activeName && (activeName === target || activeName.includes(target) || target.includes(activeName))) || (headerText && (headerText.includes(target) || target.includes(headerText)))
+      return { isTargetMatch, activeName, headerText }
+    })()`).catch(() => ({ isTargetMatch: true }))
+
+    if (!activeCheck?.isTargetMatch) {
+      throw new Error(`发送前安全拦截：当前窗口处于“${activeCheck.activeName || activeCheck.headerText}”，与目标“${name}”不一致，已阻止错发！`)
+    }
     // 若之前点击分享卡片打开过播放器弹层，先关闭，避免遮挡输入框/发送按钮。
     try {
       win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
@@ -3362,6 +3492,7 @@ class DouyinService {
         } catch (error) {
           this.log('spark_fill_failed', `${task.name} 问候任务执行失败，稍后重试`, { name: task.name, error: error.message })
         }
+        if (index < sparks.length - 1) await sleep(1500)
       }
       // 主动伴聊：活跃时段内低频挑人主动聊
       try { await this.processProactiveChats(now, blacklist, aiDisabledContacts) } catch (error) { this.log('companion_error', `主动伴聊执行失败`, { error: error.message }) }
@@ -3426,4 +3557,5 @@ class DouyinService {
     }
     if (this.discoveryWindow && !this.discoveryWindow.isDestroyed()) this.discoveryWindow.destroy()
   }
-}module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions, shouldSleepChatWindow }
+}
+module.exports = { AUTOMATION_POLL_MS, DouyinService, computePollDelay, humanReplyDelay, conversationTimeMeta, dailySparkMessage, extractConversationPreview, extractConversationTimeLabel, extractPublicCommentItemText, extractReactAwemeId, extractStreakCount, hasPublicMediaContext, hasReplyablePreviewText, isConversationTargetMatch, isUnavailableMediaReply, isVideoPreview, mediaPreviewKind, mergeMessageHistory, mergePublicMediaContext, normalizeCapturedMedia, normalizeCommentContext, normalizeVisibleMediaContext, normalizeVideoRecognitionMode, pickLatestChatMessageRole, resolveConversationSentAt, resolveSparkTask, shouldDeferConsumptionOnFromMe, shouldUseVideoFrameFallback, videoRecognitionOptions, shouldSleepChatWindow }
