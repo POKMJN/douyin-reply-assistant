@@ -1067,7 +1067,7 @@ const ACTIONS = {
       const city = (input ? input.value : (S.data?.settings?.weatherCity || '')).trim()
       showNotice(city ? `正在查询「${city}」天气...` : '正在查询当前定位天气...')
       const res = await api.ai.getWeather(city)
-      if (res?.success && res.text) {
+      if ((res?.success || res?.ok) && res.text) {
         S.weatherPreview = `实时天气：${res.text}`
         showNotice(`获取成功：${res.text}`)
       } else {

@@ -756,6 +756,20 @@ function isConversationTargetMatch(target, activeName, headerText) {
   return false
 }
 
+async function safeExecuteJavaScript(win, script, timeoutMs = 3000, fallback = null) {
+  if (!win || win.isDestroyed?.() || !win.webContents || win.webContents.isDestroyed?.()) return fallback
+  let timer
+  try {
+    const promise = win.webContents.executeJavaScript(script)
+    const timeoutPromise = new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), timeoutMs) })
+    return await Promise.race([promise, timeoutPromise])
+  } catch {
+    return fallback
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const EDITOR_SELECTOR = `[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder], [class*="chat" i] [contenteditable="true"], [class*="message" i] [contenteditable="true"], textarea[placeholder], [contenteditable="true"]`
 
 const FIND_SEND_TARGET_JS = `(() => {
@@ -1532,7 +1546,7 @@ class DouyinService {
     if (!targetName) throw new Error('联系人名称不能为空')
 
     // 检查当前是否已经停留在目标会话上（且右侧编辑器就绪）
-    const initialCheck = await win.webContents.executeJavaScript(`(() => {
+    const initialCheck = await safeExecuteJavaScript(win, `(() => {
       const target = ${JSON.stringify(targetName)}
       const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
       if (!editor || document.querySelector('[class*="RightPanelEmpty"]')) return { isAlreadyTarget: false }
@@ -1561,11 +1575,11 @@ class DouyinService {
         activeName,
         headerText
       }
-    })()`).catch(() => null)
+    })()`, 2000, null)
 
     if (initialCheck?.isAlreadyTarget) return win
 
-    const point = await win.webContents.executeJavaScript(`(() => {
+    const point = await safeExecuteJavaScript(win, `(() => {
       const target = ${JSON.stringify(targetName)}
       const wrapper = document.querySelector('[class*="conversationConversationListwrapper"]')
       if (!wrapper) return null
@@ -1576,7 +1590,7 @@ class DouyinService {
       row.scrollIntoView({ block: 'nearest' })
       const rect = row.getBoundingClientRect()
       return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }
-    })()`)
+    })()`, 2500, null)
     if (!point) throw new Error(`没有在当前私信列表中找到联系人：${name}`)
 
     win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
@@ -1587,7 +1601,7 @@ class DouyinService {
     let lastDomClickAt = 0
     let lastActiveName = ''
     while (Date.now() - started < 6000) {
-      const check = await win.webContents.executeJavaScript(`(() => {
+      const check = await safeExecuteJavaScript(win, `(() => {
         const target = ${JSON.stringify(targetName)}
         const editor = document.querySelector('[class*="messageEditorimChatEditorContainer"] [contenteditable="true"], [class*="messageEditorimChatEditorContainer"] textarea, [contenteditable="true"][data-placeholder]')
         const hasEmpty = Boolean(document.querySelector('[class*="RightPanelEmpty"]'))
@@ -1630,7 +1644,7 @@ class DouyinService {
         }
 
         return { ready: false, activeName, headerText, isOthers: false }
-      })()`).catch(() => null)
+      })()`, 2000, null)
 
       if (check?.ready) return win
       if (check?.activeName) lastActiveName = check.activeName
@@ -1638,7 +1652,7 @@ class DouyinService {
       // 若未切换成功，每隔 500ms 重试一次 DOM 点击
       if (Date.now() - lastDomClickAt >= 500) {
         lastDomClickAt = Date.now()
-        await win.webContents.executeJavaScript(`(() => {
+        await safeExecuteJavaScript(win, `(() => {
           const target = ${JSON.stringify(targetName)}
           const rows = [...document.querySelectorAll('[class*="conversationConversationItemwrapper"]')]
           const row = rows.find(node => ((node.innerText || '').split(/\\n+/)[0] || '').trim() === target)
@@ -1650,7 +1664,7 @@ class DouyinService {
           row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }))
           row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
           return true
-        })()`).catch(() => false)
+        })()`, 1500, false)
       }
 
       await sleep(150)
@@ -2838,8 +2852,27 @@ class DouyinService {
       const idleMs = Date.now() - (this.lastActivityAt || Date.now())
       const delay = computePollDelay(base, idleMs)
       this.pollTimer = setTimeout(async () => {
-        try { await this.runAutomation() } catch (error) { this.log('worker_error', error.message) }
-        if (this.pollTimer) scheduleNext()
+        try {
+          let timeoutHandle
+          const roundTimeout = new Promise((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error('AUTOMATION_ROUND_TIMEOUT')), 90000)
+          })
+          try {
+            await Promise.race([this.runAutomation(), roundTimeout])
+          } finally {
+            clearTimeout(timeoutHandle)
+          }
+        } catch (error) {
+          if (error && error.message === 'AUTOMATION_ROUND_TIMEOUT') {
+            this.log('worker_watchdog', '自动回复单轮执行超过 90 秒硬超时，已强制熔断并回收聊天窗口自愈', { detail: '避免渲染进程死锁导致 Worker 永久断链' })
+            this.recycleChatWindow()
+            this.polling = false
+          } else {
+            this.log('worker_error', error ? error.message : String(error))
+          }
+        } finally {
+          if (this.pollTimer && !this._destroyed) scheduleNext()
+        }
       }, delay || AUTOMATION_POLL_MS)
     }
     scheduleNext()
@@ -3441,11 +3474,6 @@ class DouyinService {
       }
       if (challenged) return
     } catch { /* 检测失败不阻塞本轮 */ }
-    // 看门狗：页面 executeJavaScript 卡死会让本轮无限挂起，整轮超 5 分钟强制中止
-    const watchdog = setTimeout(() => {
-      this.log('worker_watchdog', '自动回复本轮执行超时，已强制跳过本轮', { detail: '页面可能卡死' })
-      this.polling = false
-    }, 5 * 60 * 1000)
     this.polling = true
     try {
       const { contacts } = await this.syncContacts()
@@ -3531,7 +3559,6 @@ class DouyinService {
         } catch (_) { /* 话题总结失败不影响主流程 */ }
       }
     } finally {
-      clearTimeout(watchdog)
       this.polling = false
     }
   }
@@ -3547,6 +3574,7 @@ class DouyinService {
   }
 
   destroy() {
+    this._destroyed = true
     if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null }
     if (this._memoryTimer) { clearInterval(this._memoryTimer); this._memoryTimer = null }
     if (this.incomingQueue instanceof Map) this.incomingQueue.clear()

@@ -531,8 +531,8 @@ function registerAiHandlers() {
     const targetCity = typeof customCity === 'string' && customCity.trim() ? customCity.trim() : (entry?.storage?.get()?.settings?.weatherCity || '')
     if (targetCity) setGlobalWeatherCity(targetCity)
     clearWeatherCache()
-    const text = await fetchWeatherContext(entry?.storage || { get: () => ({ settings: { weatherCity: targetCity } }) })
-    return { ok: true, text, city: targetCity }
+    const text = await fetchWeatherContext(entry?.storage, targetCity)
+    return { ok: true, success: true, text, city: targetCity }
   }))
   ipcMain.handle('ai:get-skills', guarded(() => ({ ok: true, skills: getActiveStorage().get().aiSkills || [] })))
   ipcMain.handle('ai:save-skills', guarded((skills) => getActiveServices().ai.saveSkills(skills)))
