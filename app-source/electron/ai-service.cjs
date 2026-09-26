@@ -435,7 +435,11 @@ function cleanGeneratedText(value, maxLen = 120) {
   const clean = unPrefixed.replace(/^\s*(?:回复|答复|assistant|AI)\s*[:：]\s*/i, '').trim()
   if (/^(?:\[?不回复\]?|不需要回复|无需回复|不回)$/i.test(clean)) return ''
   const stripped = clean.replace(/\*+/g, '').trim()
-  return maxLen > 0 ? stripped.slice(0, maxLen) : stripped
+  const unquoted = stripped
+    .replace(/^[\s"'“”‘’`,\uff0c\u3001:：;；\]}]+/g, '')
+    .replace(/[\s"'“”‘’`\[{]+$/g, '')
+    .trim()
+  return maxLen > 0 ? unquoted.slice(0, maxLen) : unquoted
 }
 
 const stripTrailingPeriod = (text) => String(text || '').replace(/[。．，,、:：\-–—\s]+$/, '').trim()
@@ -682,7 +686,12 @@ function buildChatPrompt(contact, incoming = '', skills = [], { media = null, me
   const hasMedia = Boolean(mediaAnalysis || (media && (media.frames?.length || media.audioTranscript || media.videoPageTitle || media.videoPageDescription)))
 
   const mediaRules = hasMedia ? `
-本次对方发来了媒体内容（视频/图片/分享卡片）。围绕具体画面、台词、字幕或情绪点接话，不要泛泛评价；不要提"视频"两个字，不要说没加载/看不清/截图给我，不要提评论区、网友或任何来源。理解结果说在讲什么，你就回应什么，不要跳到没出现的人物或事件。` : ''
+本次对方发来了视频或作品分享。
+【视频回复极简黄金法则】：
+1. 严禁像影评人或老师写评语一样总结归纳（坚决不出现“展现了...的幽默”、“生动表现了...”、“让人感同身受”等任何 AI 说明文套话，违者判为严重违规）。
+2. 你就是一个刚刚刷完这条视频的好友，根据视频的笑点、槽点、高光或神评，给出你的【第一直觉反应】。
+3. 语气要极其口语化、接地气、松弛自然，多用日常口语短句（如“笑死我了”、“这也太真实了”、“直接看愣了”、“救命啊”、“当时人麻了”、“太秀了这操作”等，但不要刻意生搬硬套）。
+4. 严格字数控制：整条回复控制在 6 到 18 个字以内！短小精悍，随口一说，绝不写长句子。` : ''
 
   return `你现在就是账号本人，正在和一位熟人聊抖音私信。不要把自己当成助手、客服或咨询师。${disclosure}
 
@@ -690,10 +699,10 @@ function buildChatPrompt(contact, incoming = '', skills = [], { media = null, me
 - 每次只选一个主要接法：直接回答、明确表态、情绪共振、顺势接梗、轻轻追一句或自然收住。不要一条消息里把这些全做完。
 - 可以自然地提出一个问题来延续话题，但不要一条消息里塞两个以上问题，也不要像查户口一样连环提问。
 - 先接住对方这句话真正想表达的情绪或意思，再像平时聊天一样自然回应。
-- 回复必须简短：默认只回 1 句、5 到 20 个字；最多 2 个短句、绝不超过 30 个字。对方说得短你更要短。宁可少说，不要多说。
+- 回复必须简短有力：默认只回 1 句、6 到 18 个字；最多 2 个短句、绝不超过 25 个字。对方说得短你更要短。宁可少说，不要多说。
 - 用日常口语，允许省略主语、半句话和少量语气词。语气要松弛，但不要刻意堆“哈哈哈”“呀”“呢”“啦”。
+- 严禁任何说明文腔、总结归纳腔、公文客服腔（如“我理解你的感受”“听起来你……”“感谢你的分享”）。
 - 不要复述或总结对方原话，不要每次都称呼对方，也不要强行升华、讲道理或给一串建议。
-- 禁止客服腔和 AI 腔，例如“我理解你的感受”“听起来你……”“感谢你的分享”。
 - 不要使用 Markdown、引号、括号说明或项目符号。${emojiGuidance(contact)}
 - 不编造共同经历、承诺、时间、地点或事实。不确定时就像真人一样直说“不知道”。
 - 只输出最终要发送的那句话，绝不解释你的思路。
@@ -1543,23 +1552,24 @@ class AiService {
       } catch { /* 复读守卫重写失败不影响主流程 */ }
     }
     // 双消息（允许而非必须）：真人常连发两条。按可配概率补一条更短的随口话
-    // （半句/词/表情），独立质检：不重复首句、非空壳、无泄漏；失败静默放弃——
-    // 第二条是锦上添花，绝不能因为它破坏首条的质量。
+    // （半句/词/语气），独立质检：不重复首句、非空壳、无泄漏；失败静默放弃
     let text2 = ''
     const twoChanceRaw = Number(this.storage.get().settings?.twoMessageChance)
-    const twoChance = Number.isFinite(twoChanceRaw) ? Math.min(1, Math.max(0, twoChanceRaw)) : 0.35
+    const baseChance = Number.isFinite(twoChanceRaw) ? Math.min(1, Math.max(0, twoChanceRaw)) : 0.35
+    // 视频分享场景真人更爱跟第二句短吐槽，适当提升触发倾向
+    const twoChance = hasMediaContext ? Math.max(baseChance, 0.65) : baseChance
     if (twoChance > 0 && Math.random() < twoChance) {
       try {
         const base = apiBase(provider.baseUrl)
         const followMessages = [
           ...messages,
           { role: 'assistant', content: text },
-          { role: 'user', content: `你刚发出一句「${text.slice(0, 30)}」。像真人连发消息那样，紧跟着再补一条更短的随口话：可以是半句话、一个词或一个表情，与第一句有关但不要重复它的内容和句式，也不要开新话题。只输出这第二 条消息本身。` },
+          { role: 'user', content: `你刚发出一句「${text.slice(0, 30)}」。像真人连发消息那样，紧跟着再补一条更短的随口话：可以是半句话、一个词（如“太离谱了”、“笑死我了”、“真的假的”、“我也去试试”等），绝不要解释第一句，绝不开新话题，绝不出现长句子，3到8个字最佳。只输出这第二条消息纯文本，绝对不要带有任何引号、括号或多余标点。` },
         ]
-        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 80 }), { retries: 0, timeoutMs: 10000 })
+        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 60 }), { retries: 0, timeoutMs: 10000 })
         const t2 = cleanGeneratedText(choiceText(revised2))
         if (t2 && !isReasoningLeak(t2) && !isHollowOrMeta(t2) && !sharesLongSubstring(t2, text, 4) && replyQualityIssues(t2, hasMediaContext, contactWithTone._allowEmoji).length === 0) {
-          text2 = stripTrailingPeriod(clampCasualText(t2, 24))
+          text2 = stripTrailingPeriod(clampCasualText(t2, 16))
         }
       } catch { text2 = '' }
     }

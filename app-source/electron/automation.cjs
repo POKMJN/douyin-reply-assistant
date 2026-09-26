@@ -320,22 +320,22 @@ const mediaRequestHeaders = async (url, win) => {
 }
 
 const normalizeVideoRecognitionMode = (value) => {
-  const key = String(value || 'smart').toLowerCase()
-  return ['smart', 'comments', 'lite'].includes(key) ? key : 'smart'
+  const key = String(value || 'comments').toLowerCase()
+  return ['smart', 'comments', 'lite'].includes(key) ? key : 'comments'
 }
 
 const videoRecognitionOptions = (settings = {}) => {
   const mode = normalizeVideoRecognitionMode(settings.videoRecognitionMode || settings.videoRecognitionStrength)
-  // 三种模式（对应 UI「视频识别模式」）：
-  // smart   智能识别：画面 + 音频 + 文案 + 评论，先理解再回复、多候选择优、低置信度保守回复
-  // comments 文案 + 评论：只读公开页文案和评论，不碰画面音频，无需视觉模型，快且省
-  // lite    轻量省流：只抓 1 帧 + 文案，无音频评论，最快最省
+  // 模式优化（全面拥抱文案+神评，彻底解决抽帧生硬和幻觉痛点）：
+  // smart    已全面升级为增强型文案+神评模式，抓取多达 40 条热门神评与文案，快速精准又地道
+  // comments 文案+高密度神评模式，抓取多达 50 条神评，接梗能力极强
+  // lite     极速轻量模式，抓取标题文案与精选评论
   const presets = {
-    smart: { mode, maxFrames: 3, audio: true, commentLimit: 3, commentWaitMs: 3000, commentScrolls: 1, publicPageOnly: false },
-    comments: { mode, maxFrames: 0, audio: false, commentLimit: 50, commentWaitMs: 6000, commentScrolls: 8, publicPageOnly: true },
-    lite: { mode, maxFrames: 1, audio: false, commentLimit: 0, commentWaitMs: 0, commentScrolls: 0, publicPageOnly: false },
+    smart: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 40, commentWaitMs: 4000, commentScrolls: 6, publicPageOnly: true },
+    comments: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 50, commentWaitMs: 5000, commentScrolls: 8, publicPageOnly: true },
+    lite: { mode: 'lite', maxFrames: 0, audio: false, commentLimit: 15, commentWaitMs: 2500, commentScrolls: 2, publicPageOnly: true },
   }
-  return presets[mode] || presets.smart
+  return presets[mode] || presets.comments
 }
 
 const normalizeCommentContext = (value = {}, limit = 5) => {

@@ -21,6 +21,8 @@ locales/
 .playwright-cli/
 asar-check/
 .reasonix/
+test-artifacts/
+*.zip
 
 # Local installer side effects
 unins000.dat

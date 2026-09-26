@@ -1,6 +1,6 @@
 {
   "name": "douyin-reply-assistant",
-  "version": "2.0.0",
+  "version": "1.1.0",
   "description": "本地运行的抖音私信自动回复助手",
   "main": "electron/main.cjs",
   "type": "module",

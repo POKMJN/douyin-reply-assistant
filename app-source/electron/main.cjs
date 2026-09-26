@@ -1,6 +1,9 @@
+const fs = require('node:fs')
+try {
+  fs.appendFileSync('D:\\续声\\boot.log', `\n[${new Date().toISOString()}] === PROCESS START argv=${JSON.stringify(process.argv)} pid=${process.pid} ===\n`)
+} catch {}
 const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, Notification, nativeTheme, session } = require('electron')
 const path = require('node:path')
-const fs = require('node:fs')
 const { JsonStorage, normalizeContact } = require('./storage.cjs')
 const { SharedProvidersStore } = require('./providers-store.cjs')
 const { DouyinService } = require('./automation.cjs')
@@ -27,12 +30,23 @@ function getActiveStorage() {
 // 未捕获异常记录到日志但不退出：桌面自动化应用要尽量活着
 process.on('uncaughtException', (error) => {
   try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] UncaughtException: ${error?.stack || error?.message || error}\n`)
+  } catch {}
+  try {
     getActiveStorage()?.addLog?.({ id: Date.now(), at: new Date().toISOString(), type: 'crash', message: '未捕获异常', detail: { error: String(error?.stack || error?.message || error) } })
   } catch {}
 })
 process.on('unhandledRejection', (reason) => {
   try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] UnhandledRejection: ${reason?.stack || reason?.message || reason}\n`)
+  } catch {}
+  try {
     getActiveStorage()?.addLog?.({ id: Date.now(), at: new Date().toISOString(), type: 'crash', message: '未处理的 Promise 拒绝', detail: { error: String(reason?.stack || reason?.message || reason) } })
+  } catch {}
+})
+process.on('exit', (code) => {
+  try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] process.exit code=${code}\n`)
   } catch {}
 })
 
@@ -40,10 +54,16 @@ const BYTEDANCE_PROTOCOL = 'bytedance'
 const assetPath = (name) => path.join(__dirname, '..', 'dist', name)
 const hasBytedanceUrl = (argv) => argv.some((value) => typeof value === 'string' && /^bytedance:/i.test(value))
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
+try {
+  fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] hasSingleInstanceLock=${hasSingleInstanceLock}\n`)
+} catch {}
 
 // 抖音页面高频探测 bytedance:// 协议，每个探测拉起一个短命进程；
 // 拿不到单实例锁立即 exit(0)，避免进程堆积吃满内存。
-if (!hasSingleInstanceLock) app.exit(0)
+if (!hasSingleInstanceLock) {
+  try { fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] Exiting due to !hasSingleInstanceLock\n`) } catch {}
+  app.exit(0)
+}
 
 // 隐藏聊天页自动播放对方视频会常驻吃 CPU，禁止无手势自动播放
 app.commandLine.appendSwitch('autoplay-policy', 'user-gesture-required')
@@ -105,6 +125,9 @@ function imageOrFallback(...names) {
 }
 
 function showMainWindow() {
+  try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] showMainWindow called (hasWindow=${Boolean(mainWindow)})\n`)
+  } catch {}
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow()
   }
@@ -120,14 +143,17 @@ function showMainWindow() {
 }
 
 app.on('second-instance', (_event, argv) => {
+  try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] second-instance event received argv=${JSON.stringify(argv)}\n`)
+  } catch {}
   if (hasBytedanceUrl(argv)) return // 协议探测启动，静默吞掉
   showMainWindow()
 })
 
 function createWindow() {
-  const settings = getActiveStorage()?.get()?.settings || {}
   const isHiddenArg = process.argv.includes('--hidden')
-  const shouldStartHidden = Boolean(settings.startMinimized) || isHiddenArg
+  // 只有系统开机启动携带 --hidden 时才静默隐藏；用户常规打开一律正常显示窗口
+  const shouldStartHidden = isHiddenArg
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
@@ -212,16 +238,26 @@ function notifyAutomationEvent(event, accountId = activeAccount) {
 }
 
 function createTray() {
-  const icon = imageOrFallback('tray-icon.png', 'app-icon.png')
-  tray = new Tray(icon.resize({ width: 16, height: 16 }))
-  tray.setToolTip('抖音回复助手')
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示抖音回复助手', click: () => showMainWindow() },
-    { type: 'separator' },
-    { label: '退出', click: () => { isQuitting = true; app.quit() } },
-  ]))
-  tray.on('click', () => showMainWindow())
-  tray.on('double-click', () => showMainWindow())
+  try {
+    const icon = imageOrFallback('tray-icon.png', 'app-icon.png')
+    const resized = icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 16, height: 16 })
+    tray = new Tray(resized)
+    tray.setToolTip('抖音回复助手')
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示抖音回复助手', click: () => showMainWindow() },
+      { type: 'separator' },
+      { label: '退出', click: () => { isQuitting = true; app.quit() } },
+    ]))
+    tray.on('click', () => showMainWindow())
+    tray.on('double-click', () => showMainWindow())
+    try {
+      fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] Tray created successfully (iconEmpty=${icon.isEmpty()})\n`)
+    } catch {}
+  } catch (trayErr) {
+    try {
+      fs.appendFileSync('D:\\续声\\main-error.log', `[${new Date().toISOString()}] createTray error: ${trayErr?.stack || trayErr}\n`)
+    } catch {}
+  }
 }
 
 ipcMain.handle('app:info', () => ({
@@ -553,6 +589,7 @@ function registerAiHandlers() {
 }
 
 app.whenReady().then(() => {
+  try { fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] app.whenReady started\n`) } catch {}
   if (!hasSingleInstanceLock) return
   if (process.platform === 'win32') {
     app.setAppUserModelId('douyin-reply-assistant.desktop')
@@ -573,6 +610,7 @@ app.whenReady().then(() => {
     writeAccountIndex(index)
   }
   providersStore = new SharedProvidersStore(app.getPath('userData'))
+  try { fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] starting account services, accounts=${index.list.map(i=>i.id).join(',')}\n`) } catch {}
   for (const item of index.list) startAccountServices(item.id)
   activeAccount = (index.active && services.has(index.active)) ? index.active : (index.list[0]?.id || null)
 
@@ -593,8 +631,18 @@ app.whenReady().then(() => {
 
   getActiveStorage()?.addLog?.({ type: 'app_boot', message: `抖音回复助手 v${app.getVersion()} 已启动`, detail: { version: app.getVersion() } })
   registerAiHandlers()
+  try { fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] creating window and tray\n`) } catch {}
   createWindow()
   createTray()
+  try { fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] window and tray created, windows=${BrowserWindow.getAllWindows().length}\n`) } catch {}
+
+  // 开启心跳日志
+  setInterval(() => {
+    try {
+      fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] HEARTBEAT pid=${process.pid} windows=${BrowserWindow.getAllWindows().length}\n`)
+    } catch {}
+  }, 2000)
+
   // 定时执行轻量工作集修剪（启动 30 秒后首跑，之后每 15 分钟一次，配合 global.gc 保持低内存常驻）
   setTimeout(trimAppWorkingSet, 30000)
   setInterval(trimAppWorkingSet, 15 * 60 * 1000)
@@ -604,10 +652,16 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (isQuitting || process.platform !== 'darwin') app.quit()
+  try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] app window-all-closed (isQuitting=${isQuitting}, windows=${BrowserWindow.getAllWindows().length})\n`)
+  } catch {}
+  if (isQuitting) app.quit()
 })
 
 app.on('before-quit', async () => {
+  try {
+    fs.appendFileSync('D:\\续声\\boot.log', `[${new Date().toISOString()}] app before-quit (isQuitting=${isQuitting})\n`)
+  } catch {}
   isQuitting = true
   for (const entry of services.values()) {
     try { await entry.douyin?.destroy() } catch { /* ignore quit-time errors */ }
