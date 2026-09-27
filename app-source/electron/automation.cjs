@@ -326,14 +326,14 @@ const normalizeVideoRecognitionMode = (value) => {
 
 const videoRecognitionOptions = (settings = {}) => {
   const mode = normalizeVideoRecognitionMode(settings.videoRecognitionMode || settings.videoRecognitionStrength)
-  // 模式优化（全面拥抱文案+神评，彻底解决抽帧生硬和幻觉痛点）：
-  // smart    已全面升级为增强型文案+神评模式，抓取多达 40 条热门神评与文案，快速精准又地道
-  // comments 文案+高密度神评模式，抓取多达 50 条神评，接梗能力极强
-  // lite     极速轻量模式，抓取标题文案与精选评论
+  // 模式优化（评论收集上限收敛至 20 条，大幅提速并削减 Token 消耗）：
+  // smart    增强型文案+神评模式，精选 20 条热门神评与文案，快速精准又地道
+  // comments 文案+高密度神评模式，精选 20 条热门神评
+  // lite     极速轻量模式，精选 10 条热门神评
   const presets = {
-    smart: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 40, commentWaitMs: 4000, commentScrolls: 6, publicPageOnly: true },
-    comments: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 50, commentWaitMs: 5000, commentScrolls: 8, publicPageOnly: true },
-    lite: { mode: 'lite', maxFrames: 0, audio: false, commentLimit: 15, commentWaitMs: 2500, commentScrolls: 2, publicPageOnly: true },
+    smart: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 20, commentWaitMs: 2800, commentScrolls: 3, publicPageOnly: true },
+    comments: { mode: 'comments', maxFrames: 0, audio: false, commentLimit: 20, commentWaitMs: 2800, commentScrolls: 3, publicPageOnly: true },
+    lite: { mode: 'lite', maxFrames: 0, audio: false, commentLimit: 10, commentWaitMs: 2000, commentScrolls: 2, publicPageOnly: true },
   }
   return presets[mode] || presets.comments
 }
@@ -1465,7 +1465,9 @@ class DouyinService {
 
   async waitForChatReady(timeout = 15000) {
     const win = this.ensureWindow(false)
-    if (!win.webContents.getURL().startsWith('https://www.douyin.com/chat')) await win.loadURL(CHAT_URL)
+    if (!win.webContents.getURL().startsWith('https://www.douyin.com/chat')) {
+      win.loadURL(CHAT_URL).catch(() => {})
+    }
     const started = Date.now()
     while (Date.now() - started < timeout) {
       const ready = await win.webContents.executeJavaScript(`Boolean(document.querySelector('[class*="conversationConversationListwrapper"], [class*="messageEditorimChatEditorContainer"]'))`).catch(() => false)
@@ -2411,10 +2413,14 @@ class DouyinService {
     let enterPressed = false
     while (Date.now() - started < 5000) {
       await sleep(250)
-      after = await win.webContents.executeJavaScript(`(() => ({
-        text: (() => { const editor = document.querySelector('${EDITOR_SELECTOR}'); return editor ? ('value' in editor ? editor.value : editor.innerText) : '' })(),
-      }))()`).catch((error) => { throw new Error(`发送后读取输入框失败：${error.message}`) })
-      if (!normalizeEditorText(after.text)) return
+      after = await win.webContents.executeJavaScript(`(() => {
+        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        return {
+          found: Boolean(editor),
+          text: editor ? ('value' in editor ? editor.value : editor.innerText) : '',
+        }
+      })()`).catch((error) => { throw new Error(`发送后读取输入框失败：${error.message}`) })
+      if (after?.found && !normalizeEditorText(after.text)) return
       // 点击后 1.5s 仍未确认：按钮定位可能是 fallback 坐标（点到了空白处），
       // 改用 Enter 键发送（抖音私信输入框 Enter = 发送，Shift+Enter = 换行）。
       if (!enterPressed && Date.now() - started >= 1500) {
@@ -2808,7 +2814,7 @@ class DouyinService {
       return { ok: false, reason: `今天已发送 ${sentToday} 条，达到每日上限 ${dailyLimit} 条`, sentToday, dailyLimit }
     }
     // 单联系人每日上限：防止单个活跃对话吃光全局配额，导致其他联系人（如发了新视频的）得不到回复
-    const perContactLimit = Math.max(1, Math.floor(Number(config.maxPerContactDaily ?? 12) || 12))
+    const perContactLimit = Math.max(1, Math.floor(Number(config.maxPerContactDaily ?? 25) || 25))
     const sentToContact = history.filter((entry) => entry.at && entry.name === name && localDateKey(entry.at) === today).length
     if (sentToContact >= perContactLimit) {
       return { ok: false, reason: `今天已向该联系人发送 ${sentToContact} 条，达到单联系人上限 ${perContactLimit} 条`, sentToday, dailyLimit }
@@ -3096,7 +3102,11 @@ class DouyinService {
       })
     } else if (waitedMs >= 5 * 60 * 1000 && Date.now() - (this.lastSkipNotice.get('queue_backlog') || 0) >= 10 * 60 * 1000) {
       this.lastSkipNotice.set('queue_backlog', Date.now())
-      this.log('queue_backlog', `队列积压 ${this.incomingQueueMap().size} 条，最早一条已等待 ${Math.round(waitedMs / 1000)} 秒`, {
+      const isAllHeld = held > 0 && held === this.incomingQueueMap().size
+      const msg = isAllHeld
+        ? `队列暂挂 ${held} 条（已达单日发送保护上限，待限额刷新）`
+        : `队列积压 ${this.incomingQueueMap().size} 条，最早一条已等待 ${Math.round(waitedMs / 1000)} 秒`
+      this.log('queue_backlog', msg, {
         queueSize: this.incomingQueueMap().size,
         waitedMs,
         deferred,

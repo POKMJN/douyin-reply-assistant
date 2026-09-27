@@ -8,7 +8,7 @@ const path = require('node:path')
 // - 旧字段在 read() 迁移时剥离，联系人学习数据（messages/facts/topicLog/styleMessages）完整保留。
 const defaults = {
   version: 2,
-  automation: { autoReply: false, paused: false, sparks: [], dailyLimit: 30, maxPerContactDaily: 12, blacklist: [], aiDisabledContacts: [] },
+  automation: { autoReply: false, paused: false, sparks: [], dailyLimit: 30, maxPerContactDaily: 25, blacklist: [], aiDisabledContacts: [] },
   contacts: [],
   providers: [],
   aiSkills: [],

@@ -461,6 +461,14 @@ function choiceText(out, maxLen = 600) {
   return ''
 }
 
+function extractUsage(out) {
+  if (!out || !out.usage) return null
+  const prompt = Number(out.usage.prompt_tokens) || 0
+  const completion = Number(out.usage.completion_tokens) || 0
+  const total = Number(out.usage.total_tokens) || (prompt + completion)
+  return { prompt, completion, total }
+}
+
 function isNoReplyDecision(value) {
   const text = String(value || '').replace(/```(?:\w+)?\s*/g, '').replace(/\s+/g, ' ').trim()
   return /^(?:\[?不回复\]?|不需要回复|无需回复|不回)$/i.test(text)
@@ -779,8 +787,9 @@ function buildChatMessages(contact, incoming, media, mediaAnalysis = '', skills 
     media?.videoPageTitle ? `标题：${media.videoPageTitle}` : '',
     media?.videoPageDescription ? `文案：${media.videoPageDescription}` : '',
   ].filter(Boolean).join('；')
-  const commentText = (Array.isArray(media?.videoComments) && media.videoComments.length)
-    ? `观众反馈（只用于帮你判断这条视频大概在讲什么、整体氛围如何；回复里绝对不要转述、引用或回应任何具体评论，也不要出现"评论区""热评""网友""弹幕"这类字眼；你的回复必须是你自己看完视频后的直接反应）：${media.videoComments.map((item, index) => `${index + 1}. ${String(item).slice(0, 60)}`).join(' / ')}\n`
+  const commentsList = (Array.isArray(media?.videoComments) ? media.videoComments : []).slice(0, 20)
+  const commentText = commentsList.length
+    ? `热评参考（感受视频笑点与氛围，勿直接引用具体评论或提评论区）：${commentsList.map((item, index) => `${index + 1}. ${String(item).slice(0, 40)}`).join(' / ')}\n`
     : ''
   const publicInfoText = publicInfo ? `视频公开页信息：${publicInfo}\n` : ''
   const hasMediaContext = frames.length > 0 || Boolean(analysis) || Boolean(media?.audioTranscript) || Boolean(publicInfoText) || Boolean(commentText)
@@ -1195,14 +1204,15 @@ class AiService {
   }
 
   // 通用多模型兜底补全
-  async inquiryCompletion(messages, { temperature = 0.6, maxTokens = 400 } = {}) {
+  async inquiryCompletion(messages, { temperature = 0.6, maxTokens = 300 } = {}) {
     const config = this.storage.get(); const providers = config.providers || []
     if (!providers.length) throw new Error('请先配置可用模型')
     let provider; let out; let lastError
     for (const candidate of this.providerPool(providers)) {
       try {
         const base = apiBase(candidate.baseUrl)
-        const targetTokens = isReasoningModel(candidate.model) ? Math.max(maxTokens, 3500) : Math.max(maxTokens, 2000)
+        // 限制合理输出 Token 预算：推理模型放宽至 1200，通用轻量任务限制 300~500，杜绝巨额预扣费
+        const targetTokens = isReasoningModel(candidate.model) ? Math.min(Math.max(maxTokens, 800), 1200) : Math.min(Math.max(maxTokens, 150), 500)
         out = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages, temperature, max_tokens: targetTokens }))
         if (!choiceText(out)) throw new Error('模型接口已响应，但没有返回有效的回复内容')
         provider = candidate
@@ -1215,22 +1225,26 @@ class AiService {
       }
     }
     if (!provider || !out) throw lastError || new Error('没有可用的 AI 模型')
-    return { text: cleanGeneratedText(choiceText(out, 600), 600), model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), finishReason: out?.choices?.[0]?.finish_reason }
+    const usage = extractUsage(out)
+    return { text: cleanGeneratedText(choiceText(out, 600), 600), model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), finishReason: out?.choices?.[0]?.finish_reason, usage }
   }
 
   async summarizeComments(comments = []) {
-    const list = (Array.isArray(comments) ? comments : []).map((item) => String(item || '').replace(/\s+/g, ' ').trim()).filter((item) => item && !isLowInfoComment(item))
-    if (!list.length) return ''
-    if (list.length <= 3) return list.join('；')
-    const transcript = list.map((item, index) => `${index + 1}. ${item.slice(0, 80)}`).join('\n')
+    const list = (Array.isArray(comments) ? comments : [])
+      .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
+      .filter((item) => item && !isLowInfoComment(item))
+      .slice(0, 15) // 最多取 15 条高赞神评做氛围归纳，节省输入 Token
+    if (!list.length) return { text: '', usage: null }
+    if (list.length <= 2) return { text: list.join('；'), usage: null }
+    const transcript = list.map((item, index) => `${index + 1}. ${item.slice(0, 45)}`).join('\n')
     try {
       const result = await this.inquiryCompletion([
-        { role: 'system', content: '你根据一条抖音视频下的观众反馈，推断这条视频本身：用 1 到 2 句中文概括"这条视频大概在讲什么、整体是什么氛围（如搞笑/玩梗/吐槽/共鸣/温情/实用/有争议）"。只描述视频本身和它的氛围，绝对不要出现"评论""网友""大家""热评"这些来源类字眼，不要说"观众认为"，直接像在描述这条视频。不要编造画面里没有的内容。' },
+        { role: 'system', content: '你根据抖音视频观众反馈，用 1 到 2 句中文极短概括视频大概在讲什么、整体氛围（如搞笑/玩梗/吐槽）。绝对不要出现"评论""网友""热评"等字眼，直接像描述视频本身。' },
         { role: 'user', content: transcript },
-      ], { temperature: 0.3, maxTokens: 400 })
-      return String(result.text || '').replace(/\s+/g, ' ').trim().slice(0, 220)
+      ], { temperature: 0.3, maxTokens: 180 })
+      return { text: String(result.text || '').replace(/\s+/g, ' ').trim().slice(0, 180), usage: result.usage }
     } catch (_) {
-      return ''
+      return { text: '', usage: null }
     }
   }
 
@@ -1350,6 +1364,15 @@ class AiService {
   // 相比旧版：去掉多候选并行调用（延迟与配额减半），保留全部质量门槛。
   async draft({ contact, incoming, videoFrames, incomingMeta }) {
     const started = Date.now()
+    const usageTracker = { prompt: 0, completion: 0, total: 0 }
+    const recordUsage = (res) => {
+      const u = res?.usage ? res.usage : extractUsage(res)
+      if (u) {
+        usageTracker.prompt += (u.prompt || 0)
+        usageTracker.completion += (u.completion || 0)
+        usageTracker.total += (u.total || ((u.prompt || 0) + (u.completion || 0)))
+      }
+    }
     const config = this.storage.get()
     const configuredProviders = config.providers || []
     if (!configuredProviders.length) throw new Error('没有配置可用模型')
@@ -1382,8 +1405,9 @@ class AiService {
     // 无画面分析但抓到了评论：浓缩成"视频内容与氛围"
     if (!mediaAnalysis.text && media.videoComments.length) {
       try {
-        const summary = await this.summarizeComments(media.videoComments)
-        if (summary) mediaAnalysis = { ...mediaAnalysis, text: `视频内容与氛围：${summary}` }
+        const summaryRes = await this.summarizeComments(media.videoComments)
+        if (summaryRes?.text) mediaAnalysis = { ...mediaAnalysis, text: `视频内容与氛围：${summaryRes.text}` }
+        if (summaryRes?.usage) recordUsage(summaryRes)
       } catch (_) { /* 摘要失败则保持原文评论注入 */ }
     }
     // 视频上下文落库：成为后续轮次的一等背景信息
@@ -1431,6 +1455,7 @@ class AiService {
         // 其余空响应仍按无效内容换备用模型
         if (!choiceText(out) && !isNoReplyDecision(String(out?.choices?.[0]?.message?.content || ''))) throw new Error('模型接口已响应，但没有返回有效的回复内容')
         provider = candidate
+        recordUsage(out)
         this.noteProviderSuccess(provider)
         break
       } catch (error) {
@@ -1441,6 +1466,7 @@ class AiService {
             out = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(candidate)}` } }, JSON.stringify({ model: candidate.model, messages: singleMessages, temperature: 0.85, max_tokens: replyMaxTokens(candidate.model) }), { retries: 1, timeoutMs: 18000 })
             if (!choiceText(out)) throw new Error('模型接口已响应，但没有返回有效的回复内容')
             provider = candidate
+            recordUsage(out)
             this.noteProviderSuccess(provider)
             break
           } catch (retryError) {
@@ -1461,20 +1487,20 @@ class AiService {
     // 否则会掉进"没有生成有效回复"的异常分支（旧版缺陷：不回复决策被当成 AI 故障）
     const rawContent = String(out?.choices?.[0]?.message?.content || '')
     if (!rawReply && isNoReplyDecision(rawContent)) {
-      this.storage.addLog({ type: 'ai_reply_skipped', message: `AI 判断当前不适合回复 ${contact?.name || '联系人'}`, detail: { elapsedMs: Date.now() - started, model: provider.model } })
-      return { ok: true, text: '', labeledText: '', skipped: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+      this.storage.addLog({ type: 'ai_reply_skipped', message: `AI 判断当前不适合回复 ${contact?.name || '联系人'}`, detail: { elapsedMs: Date.now() - started, model: provider.model, tokens: usageTracker } })
+      return { ok: true, text: '', labeledText: '', skipped: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
     }
     if (isNoReplyDecision(rawReply)) {
-      this.storage.addLog({ type: 'ai_reply_skipped', message: `AI 判断当前不适合回复 ${contact?.name || '联系人'}`, detail: { elapsedMs: Date.now() - started, model: provider.model } })
-      return { ok: true, text: '', labeledText: '', skipped: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+      this.storage.addLog({ type: 'ai_reply_skipped', message: `AI 判断当前不适合回复 ${contact?.name || '联系人'}`, detail: { elapsedMs: Date.now() - started, model: provider.model, tokens: usageTracker } })
+      return { ok: true, text: '', labeledText: '', skipped: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
     }
 
     let text = cleanGeneratedText(rawReply)
     if (!text) throw new Error('模型没有生成有效回复')
     text = stripTrailingPeriod(clampCasualText(text, 40))
     if (isReasoningLeak(text)) {
-      this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复疑似模型思考过程，已拦截拒发`, detail: { rejectedText: text.slice(0, 120), model: provider.model } })
-      return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+      this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复疑似模型思考过程，已拦截拒发`, detail: { rejectedText: text.slice(0, 120), model: provider.model, tokens: usageTracker } })
+      return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
     }
 
     const initialQualityIssues = replyQualityIssues(text, hasMediaContext, contactWithTone._allowEmoji)
@@ -1482,12 +1508,15 @@ class AiService {
     if (initialQualityIssues.length) {
       try {
         const base = apiBase(provider.baseUrl)
+        // 改写上下文轻量化：不重复发送整包长篇背景与视频评论，节省大量 Token
         const rewriteMessages = [
-          ...messages,
+          { role: 'system', content: `你是一名在抖音私信聊天的真人。上一句候选回复有以下问题：${initialQualityIssues.join('、')}。请保留核心意思，改成更像熟人随口说的一条自然短句（6到18个字）。不要解释，只输出改写正文。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 60)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: `上一条候选回复有这些问题：${initialQualityIssues.join('、')}。请保留话题和已知事实，改成更像熟人私信的一条自然短回复。如果问题涉及攻击性语言或对他人处境的刻薄评判，必须彻底去掉，换成善意、松弛的表达。不要新增事实，不要解释，只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: '改写为极简口语短句：' },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.65, max_tokens: 100 }), { retries: 1, timeoutMs: 12000 })
+        recordUsage(revised)
         const revisedText = cleanGeneratedText(choiceText(revised))
         if (revisedText && replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).length < initialQualityIssues.length) {
           text = revisedText
@@ -1500,73 +1529,75 @@ class AiService {
     // 终检：攻击性/刻薄/空壳/元话语/Markdown 残留 → 整条拒发（宁可不说）
     const finalIssues = replyQualityIssues(text, hasMediaContext, contactWithTone._allowEmoji).filter((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown|残缺标签|未完结标点|缺少有效对话/.test(issue))
     if (finalIssues.length) {
-      this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复未通过终检被拦截拒发`, detail: { rejectedText: text, issues: finalIssues, rewritten, model: provider.model } })
-      return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+      this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复未通过终检被拦截拒发`, detail: { rejectedText: text, issues: finalIssues, rewritten, model: provider.model, tokens: usageTracker } })
+      return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
     }
-    // 软性问题兜底（soak 测试发现的重写失败漏网）：第一次重写失败后仍带 AI 腔/说明性前缀时，
-    // 给一次针对性改写；仍不过关就拒发——客服腔消息比沉默更伤聊天自然度。
+    // 软性问题兜底：客服腔针对性改写
     const softIssues = replyQualityIssues(text, hasMediaContext, contactWithTone._allowEmoji).filter((issue) => /AI 腔|说明性前缀/.test(issue))
     if (softIssues.length) {
       try {
         const base = apiBase(provider.baseUrl)
+        // 改写上下文轻量化
         const rewriteMessages = [
-          ...messages,
+          { role: 'system', content: `你是一名在抖音聊私信的真人。上一句有说明文/客服腔（${softIssues.join('、')}）。请彻底重写成一句熟人间随口说的话：1句、6到18字，禁止任何客服腔与总结说教，只输出纯文本。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 60)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: `你写的这句是客服腔/说明文，完全不像熟人在抖音私信里说话（问题：${softIssues.join('、')}）。请彻底重写成一句熟人随口说的话：保留话题，1 句、5 到 20 个字，禁止"我理解你的感受""听起来你""感谢你的分享""如果你愿意"这类表达，不要解释，只输出正文。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: '改写为熟人随口话：' },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.7, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.7, max_tokens: 100 }), { retries: 1, timeoutMs: 12000 })
+        recordUsage(revised)
         const revisedText = cleanGeneratedText(choiceText(revised))
         if (revisedText && !replyQualityIssues(revisedText, hasMediaContext, contactWithTone._allowEmoji).some((issue) => /攻击性|刻薄评判|内容空洞|元话语|Markdown|AI 腔|说明性前缀|残缺标签|未完结标点|缺少有效对话/.test(issue))) {
           text = revisedText
           rewritten = true
         } else {
-          this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复重写后仍是客服腔，已拦截拒发`, detail: { rejectedText: text, issues: softIssues, model: provider.model } })
-          return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+          this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复重写后仍是客服腔，已拦截拒发`, detail: { rejectedText: text, issues: softIssues, model: provider.model, tokens: usageTracker } })
+          return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
         }
       } catch (error) {
-        // 改写调用本身失败：正文已确认是客服腔，宁可拒发也不发出去
-        // （soak 1.34M 轮抓到的漏网路径：此前 catch 会保留原客服腔文本直接发送）
-        this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复为客服腔且改写调用失败，已拦截拒发`, detail: { rejectedText: text, issues: softIssues, error: error.message, model: provider.model } })
-        return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started }
+        this.storage.addLog({ type: 'ai_reply_rejected', message: `${contact?.name || '联系人'} 的回复为客服腔且改写调用失败，已拦截拒发`, detail: { rejectedText: text, issues: softIssues, error: error.message, model: provider.model, tokens: usageTracker } })
+        return { ok: true, text: '', labeledText: '', skipped: true, rejected: true, model: provider.model, provider: provider.name, aiLabel: aiLabel(provider), showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
       }
     }
-    // 连续复读守卫：上一轮已经发过同样的话时（低信息消息连发最容易触发），
-    // 带上"你刚说过"的提醒重写一次；重写仍重复则保留改写前的较短版本不强求。
+    // 连续复读守卫：轻量化重写
     const historyMsgs = normalizeLearnedMessages(contactWithTone.learning?.messages)
     const lastMine = stripAiPrefix(historyMsgs.filter((m) => m.role === 'me').at(-1)?.text || '')
     if (lastMine && (text === lastMine || sharesLongSubstring(text, lastMine, 5))) {
       try {
         const base = apiBase(provider.baseUrl)
         const rewriteMessages = [
-          ...messages,
+          { role: 'system', content: `你上一条已经发过「${lastMine.slice(0, 30)}」，这句和它重复了。换个角度重新随口回一句（6到18字），不要重复上一条的内容和句式；只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 60)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: `你上一条已经发过「${lastMine.slice(0, 30)}」，这句和它重复了。换个角度重新回一句，不要重复上一条的内容和句式；只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
+          { role: 'user', content: '换角度随口回一句：' },
         ]
-        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.9, max_tokens: 180 }), { retries: 1, timeoutMs: 12000 })
+        const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.9, max_tokens: 100 }), { retries: 1, timeoutMs: 12000 })
+        recordUsage(revised)
         const revisedText = cleanGeneratedText(choiceText(revised))
         if (revisedText && !(revisedText === lastMine || sharesLongSubstring(revisedText, lastMine, 5))) {
           text = revisedText
           rewritten = true
-          this.storage.addLog?.({ type: 'ai_draft', message: `${contact?.name || '联系人'} 的回复与上一条重复，已自动换角度重写`, detail: { previous: lastMine.slice(0, 40), revised: text.slice(0, 40) } })
+          this.storage.addLog?.({ type: 'ai_draft', message: `${contact?.name || '联系人'} 的回复与上一条重复，已自动换角度重写`, detail: { previous: lastMine.slice(0, 40), revised: text.slice(0, 40), tokens: usageTracker } })
         }
       } catch { /* 复读守卫重写失败不影响主流程 */ }
     }
-    // 双消息（允许而非必须）：真人常连发两条。按可配概率补一条更短的随口话
-    // （半句/词/语气），独立质检：不重复首句、非空壳、无泄漏；失败静默放弃
+    // 双消息（允许而非必须）：真人常连发两条。轻量化追发，极大减少重复 Token
     let text2 = ''
     const twoChanceRaw = Number(this.storage.get().settings?.twoMessageChance)
     const baseChance = Number.isFinite(twoChanceRaw) ? Math.min(1, Math.max(0, twoChanceRaw)) : 0.35
-    // 视频分享场景真人更爱跟第二句短吐槽，适当提升触发倾向
     const twoChance = hasMediaContext ? Math.max(baseChance, 0.65) : baseChance
     if (twoChance > 0 && Math.random() < twoChance) {
       try {
         const base = apiBase(provider.baseUrl)
+        // 极轻量级追发上下文：仅传入上一句简短对话，不带 3000 tokens 冗余长背景，单次追发立省 97% Token
         const followMessages = [
-          ...messages,
+          { role: 'system', content: '你是刚才在抖音私信发消息的真人。现在紧跟着上一句随口追发第二条超短随口吐槽（半句话或一个词，3到8个字，如“太离谱了”、“笑死我了”、“真的假的”等）。绝不开新话题，绝不解释第一句，不要任何引号标点。只输出这句纯文本。' },
+          { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 50)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: `你刚发出一句「${text.slice(0, 30)}」。像真人连发消息那样，紧跟着再补一条更短的随口话：可以是半句话、一个词（如“太离谱了”、“笑死我了”、“真的假的”、“我也去试试”等），绝不要解释第一句，绝不开新话题，绝不出现长句子，3到8个字最佳。只输出这第二条消息纯文本，绝对不要带有任何引号、括号或多余标点。` },
+          { role: 'user', content: '紧跟着随口补一句极短的话（3~8字）：' },
         ]
-        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 60 }), { retries: 0, timeoutMs: 10000 })
+        const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 40 }), { retries: 0, timeoutMs: 10000 })
+        recordUsage(revised2)
         const t2 = cleanGeneratedText(choiceText(revised2))
         if (t2 && !isReasoningLeak(t2) && !isHollowOrMeta(t2) && !sharesLongSubstring(t2, text, 4) && replyQualityIssues(t2, hasMediaContext, contactWithTone._allowEmoji).length === 0) {
           text2 = stripTrailingPeriod(clampCasualText(t2, 16))
@@ -1574,8 +1605,9 @@ class AiService {
       } catch { text2 = '' }
     }
     const label = aiLabel(provider)
-    this.storage.addLog({ type: 'ai_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 草稿`, detail: { elapsedMs: Date.now() - started, video: hasMediaContext, videoFrames: genFrames.length, mediaAnalysis: mediaAnalysis.text || '', model: provider.model, provider: provider.name, naturalRewrite: rewritten } })
-    return { ok: true, text, text2, labeledText: showAiModelLabel ? labelAiReply(text, provider) : text, model: provider.model, provider: provider.name, aiLabel: label, showAiModelLabel, elapsedMs: Date.now() - started }
+    const tokenNotice = usageTracker.total > 0 ? ` (消耗 ${usageTracker.total} tokens: 输入${usageTracker.prompt}/输出${usageTracker.completion})` : ''
+    this.storage.addLog({ type: 'ai_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 草稿${tokenNotice}`, detail: { elapsedMs: Date.now() - started, tokens: usageTracker, video: hasMediaContext, videoFrames: genFrames.length, mediaAnalysis: mediaAnalysis.text || '', model: provider.model, provider: provider.name, naturalRewrite: rewritten } })
+    return { ok: true, text, text2, labeledText: showAiModelLabel ? labelAiReply(text, provider) : text, model: provider.model, provider: provider.name, aiLabel: label, showAiModelLabel, elapsedMs: Date.now() - started, tokens: usageTracker }
   }
 
   normalizeMedia(value) {
@@ -1695,8 +1727,9 @@ class AiService {
     // 采用专用的播报安全收尾：放宽至 130 字，遇到末尾未收束时安全修补，绝不断半截
     text = stripTrailingPeriod(safeFinishSparkMessage(text, 130))
     recordSparkOpener(contact?.name || '', text)
-    this.storage.addLog({ type: 'ai_spark_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 问候文案`, detail: { elapsedMs: Date.now() - started, model: result.model, provider: result.provider } })
-    return { ok: true, text, model: result.model, provider: result.provider, aiLabel: result.aiLabel, elapsedMs: Date.now() - started }
+    const sparkTokenNotice = result.usage?.total ? ` (消耗 ${result.usage.total} tokens: 输入${result.usage.prompt}/输出${result.usage.completion})` : ''
+    this.storage.addLog({ type: 'ai_spark_draft', message: `已为 ${contact?.name || '联系人'} 生成 AI 问候文案${sparkTokenNotice}`, detail: { elapsedMs: Date.now() - started, model: result.model, provider: result.provider, tokens: result.usage } })
+    return { ok: true, text, model: result.model, provider: result.provider, aiLabel: result.aiLabel, elapsedMs: Date.now() - started, tokens: result.usage }
   }
 
   // AI 伴聊主动开场：根据距上次互动天数决定续话题还是重拾关系
