@@ -3509,23 +3509,34 @@ class DouyinService {
     // 风控检测：可见验证码出现即暂停本账号自动化，验证通过后自动恢复
     try {
       const challenged = await this.window.webContents.executeJavaScript(`(() => {
-        const nodes = document.querySelectorAll('[class*="captcha"], iframe[src*="captcha"], [id*="captcha"]')
+        const nodes = document.querySelectorAll('[class*="captcha"], iframe[src*="captcha"], [id*="captcha"], [class*="secsdk-captcha"]')
         for (const el of nodes) {
+          const style = window.getComputedStyle(el)
+          if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') <= 0.05) continue
           const rect = el.getBoundingClientRect()
-          if (rect.width > 100 && rect.height > 100) return true
+          if (rect.width > 120 && rect.height > 80 && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth) {
+            return {
+              matched: true,
+              tag: el.tagName,
+              className: String(el.className || '').slice(0, 100),
+              id: el.id || '',
+              src: String(el.getAttribute('src') || '').slice(0, 120),
+            }
+          }
         }
         return false
       })()`).catch(() => false)
-      if (challenged && !this.verificationActive) {
+      const hasChallenge = Boolean(challenged?.matched)
+      if (hasChallenge && !this.verificationActive) {
         this.verificationActive = true
-        this.log('verification_required', '检测到抖音安全验证，已暂停本账号的自动回复；请在登录窗口完成验证，通过后自动恢复', { account: this.partition })
+        this.log('verification_required', '检测到抖音安全验证，已暂停本账号的自动回复；请在登录窗口完成验证，通过后自动恢复', { account: this.partition, node: challenged })
         this.emitEvent('verification', { required: true })
-      } else if (!challenged && this.verificationActive) {
+      } else if (!hasChallenge && this.verificationActive) {
         this.verificationActive = false
         this.log('verification_cleared', '安全验证已通过，本账号自动回复恢复运行', {})
         this.emitEvent('verification', { required: false })
       }
-      if (challenged) return
+      if (hasChallenge) return
     } catch { /* 检测失败不阻塞本轮 */ }
     this.polling = true
     try {
