@@ -3509,17 +3509,16 @@ class DouyinService {
     // 风控检测：可见验证码出现即暂停本账号自动化，验证通过后自动恢复
     try {
       const challenged = await this.window.webContents.executeJavaScript(`(() => {
-        const nodes = document.querySelectorAll('[class*="captcha" i], iframe[src*="captcha" i], [id*="captcha" i], [class*="secsdk-captcha" i]')
+        const bodyText = String(document.body?.innerText || '')
+        const hasVerifyText = /(?:请完成安全验证|拖动下方滑块完成拼图|点击下方按钮完成验证|按顺序点击|请按要求完成验证)/.test(bodyText)
+        if (!hasVerifyText) return false
+
+        const nodes = document.querySelectorAll('[class*="secsdk_captcha_modal" i], [class*="captcha_modal" i], [class*="captcha" i], iframe[src*="captcha" i], [id*="captcha" i]')
         for (const el of nodes) {
           const style = window.getComputedStyle(el)
           if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') <= 0.05) continue
           const rect = el.getBoundingClientRect()
           if (rect.width > 120 && rect.height > 80 && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth) {
-            if (el.tagName !== 'IFRAME') {
-              const hasVerifyWidget = Boolean(el.querySelector('iframe, canvas, img, [class*="drag" i], [class*="slide" i], [class*="verify" i]'))
-              const hasVerifyText = /(?:拖动|验证|安全验证|点击|按住|完成拼图|智能验证)/.test(el.innerText || '')
-              if (!hasVerifyWidget && !hasVerifyText) continue
-            }
             return {
               matched: true,
               tag: el.tagName,
