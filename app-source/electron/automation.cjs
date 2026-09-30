@@ -945,7 +945,7 @@ class DouyinService {
     if (!win) return {}
     try {
       if (hasShareUrl) {
-        await win.loadURL(media.shareUrl)
+        await win.loadURL(media.shareUrl, { timeout: 15000 }).catch(() => {})
         // 立即静音并暂停视频播放，防止自动播放完后切到下一个视频
         await win.webContents.executeJavaScript(`(() => {
           try {
@@ -1000,7 +1000,7 @@ class DouyinService {
         if (target) target.click()
         return Boolean(target)
       })()`).catch(() => false)
-      const scrolls = Math.max(1, Math.min(8, Math.floor(Number(options.commentScrolls || 1) || 1)))
+      const scrolls = Math.max(1, Math.min(3, Math.floor(Number(options.commentScrolls || 1) || 1)))
       for (let index = 0; index < scrolls; index += 1) {
         await sleep(Math.max(450, Math.floor(Number(options.commentWaitMs || 3000) / Math.max(2, scrolls + 1))))
         // 滚动中检查是否发生切视频
@@ -2887,7 +2887,7 @@ class DouyinService {
         try {
           let timeoutHandle
           const roundTimeout = new Promise((_, reject) => {
-            timeoutHandle = setTimeout(() => reject(new Error('AUTOMATION_ROUND_TIMEOUT')), 90000)
+            timeoutHandle = setTimeout(() => reject(new Error('AUTOMATION_ROUND_TIMEOUT')), 120000)
           })
           try {
             await Promise.race([this.runAutomation(), roundTimeout])
