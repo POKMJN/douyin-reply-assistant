@@ -1569,7 +1569,7 @@ class AiService {
           { role: 'system', content: `你上一条已经发过「${lastMine.slice(0, 30)}」，这句和它重复了。换个角度重新随口回一句（6到18字），不要重复上一条的内容和句式；只输出改写后的正文。${emojiGuidance(contactWithTone)}` },
           { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 60)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: '换角度随口回一句：' },
+          { role: 'user', content: '换角度随口回一句（不要重复上一条）：' },
         ]
         const revised = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: rewriteMessages, temperature: 0.9, max_tokens: 100 }), { retries: 1, timeoutMs: 12000 })
         recordUsage(revised)
@@ -1594,7 +1594,7 @@ class AiService {
           { role: 'system', content: '你是刚才在抖音私信发消息的真人。现在紧跟着上一句随口追发第二条超短随口吐槽（半句话或一个词，3到8个字，如“太离谱了”、“笑死我了”、“真的假的”等）。绝不开新话题，绝不解释第一句，不要任何引号标点。只输出这句纯文本。' },
           { role: 'user', content: incoming ? `对方说：${incoming.slice(0, 50)}` : '对方发来了一个视频' },
           { role: 'assistant', content: text },
-          { role: 'user', content: '紧跟着随口补一句极短的话（3~8字）：' },
+          { role: 'user', content: '再补一条更短的随口话（3~8字）：' },
         ]
         const revised2 = await this.post(`${base}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.keyFor(provider)}` } }, JSON.stringify({ model: provider.model, messages: followMessages, temperature: 1.0, max_tokens: 40 }), { retries: 0, timeoutMs: 10000 })
         recordUsage(revised2)

@@ -103,6 +103,9 @@ function pickLatestChatMessageRole(candidates, { editorRect, innerWidth = 0 } = 
   const last = rows[0]
   if (last.me === true) return 'me'
   if (last.them === true) return 'contact'
+  if (last.avatarRect && last.avatarRect.width > 0) {
+    return (last.avatarRect.left + (last.avatarRect.width / 2)) > divider ? 'me' : 'contact'
+  }
   return last.rect.left + (last.rect.width / 2) > divider ? 'me' : 'contact'
 }
 
@@ -873,6 +876,7 @@ class DouyinService {
     this.lastSkipNotice = new Map()
     this.blockedContacts = new Set()
     this.aiBackoff = new Map()
+    this.fromMeDeferCount = new Map()
     this.verificationActive = false
     this.lastActivityAt = Date.now() // 最近一次会话有新消息的时间，用于空闲自适应降频
     this._capturedVideoUrl = null
@@ -934,8 +938,7 @@ class DouyinService {
     const limit = Math.max(0, Math.min(50, Math.floor(Number(options.commentLimit || 0) || 0)))
     if (!limit) return {}
     const hasShareUrl = Boolean(media?.shareUrl)
-    const targetAwemeId = (media?.shareUrl || '').match(/\/video\/(\d+)/)?.[1]
-      || (media?.shareUrl || '').match(/modal_id=(\d+)/)?.[1]
+    const targetAwemeId = (media?.shareUrl || '').match(/(?:modal_id=|\/(?:video|note)\/)(\d+)/)?.[1]
       || (media?.shareUrl || '').match(/\d{18,20}/)?.[0]
       || ''
     const win = hasShareUrl ? this.ensureDiscoveryWindow() : sourceWindow
@@ -951,7 +954,7 @@ class DouyinService {
         })()`).catch(() => {})
         // 校验加载后的 URL：若被重定向到了无关推荐流（如 /jingxuan 但 modal_id 与目标不符），立即放弃，严禁张冠李戴
         const loadedUrl = String(win.webContents.getURL() || '')
-        const loadedModalMatch = loadedUrl.match(/modal_id=(\d+)/)?.[1] || loadedUrl.match(/\/video\/(\d+)/)?.[1] || ''
+        const loadedModalMatch = loadedUrl.match(/(?:modal_id=|\/(?:video|note)\/)(\d+)/)?.[1] || ''
         if (targetAwemeId && loadedModalMatch && loadedModalMatch !== targetAwemeId) {
           this.log('video_comments_mismatch', `公开页被重定向到其他推荐视频（目标 ${targetAwemeId} vs 当前 ${loadedModalMatch}），已放弃读取该页`, {
             name,
@@ -1003,7 +1006,7 @@ class DouyinService {
         // 滚动中检查是否发生切视频
         const currentAweme = await win.webContents.executeJavaScript(`(() => {
           try { document.querySelectorAll('video').forEach((v) => { v.pause(); v.muted = true }) } catch {}
-          const m = location.href.match(/modal_id=(\\d+)/) || location.href.match(/\\/video\\/(\\d+)/);
+          const m = location.href.match(/(?:modal_id=|\\/(?:video|note)\\/)(\\d+)/);
           return m ? m[1] : '';
         })()`).catch(() => '')
         if (targetAwemeId && currentAweme && currentAweme !== targetAwemeId) {
@@ -1029,7 +1032,7 @@ class DouyinService {
         const limit = ${JSON.stringify(limit)}
         const targetAwemeId = ${JSON.stringify(targetAwemeId)}
         const currentHref = String(location.href || '')
-        const currentId = (currentHref.match(/modal_id=(\\d+)/) || currentHref.match(/\\/video\\/(\\d+)/))?.[1] || ''
+        const currentId = currentHref.match(/(?:modal_id=|\\/(?:video|note)\\/)(\\d+)/)?.[1] || ''
         if (targetAwemeId && currentId && currentId !== targetAwemeId) {
           return { mismatch: true, targetAwemeId, currentId, href: currentHref }
         }
@@ -1697,16 +1700,30 @@ class DouyinService {
             for (let current = row, depth = 0; current && depth < 5; current = current.parentElement, depth += 1) classes += ' ' + String(current.className || '')
             const me = /isFromMe|MessageItemTextisFromMe/i.test(classes) || /(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(classes)
             const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(classes)
-            const bubble = row.querySelector('[class*="content"], [class*="text"], [class*="bubble"], video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]') || row
+            const avatar = row.querySelector('[class*="avatar" i], img[src*="avatar"], [class*="Avatar" i]')
+            let avatarRect = null
+            if (avatar) {
+              const ar = avatar.getBoundingClientRect()
+              if (ar.width > 0 && ar.height > 0) avatarRect = { left: ar.left, width: ar.width, top: ar.top, height: ar.height }
+            }
+            const bubble = row.querySelector('[class*="MessageItemShareAweme" i], [class*="ShareAweme" i], [class*="MessageItemText" i], [class*="cardMsg" i], [class*="imageMsg" i], [class*="mediaMsg" i], [class*="textMsg" i], [class*="bubble" i], video, img:not([class*="avatar" i])')
+              || row.querySelector('[class*="content"]:not([class*="rowBox"]):not([class*="columnBox"]):not([class*="contentBox"]):not([class*="ClickArea" i]), [class*="text"], [style*="background-image"], [class*="video" i], [class*="image" i], [class*="card" i]')
+              || row
             const bubbleRect = bubble.getBoundingClientRect()
-            return { row, rect, bubbleRect, me, them }
+            return { row, rect, bubbleRect, avatarRect, me, them }
           })
           .filter(Boolean)
           .sort((left, right) => left.rect.top - right.rect.top)
         const selected = rows.at(-1)
         if (!selected) return null
         const divider = editorRect ? editorRect.left + editorRect.width / 2 : innerWidth * 0.65
-        const role = selected.me ? 'me' : selected.them ? 'contact' : selected.bubbleRect.left + selected.bubbleRect.width / 2 > divider ? 'me' : 'contact'
+        let role = selected.me ? 'me' : selected.them ? 'contact' : null
+        if (!role && selected.avatarRect) {
+          role = (selected.avatarRect.left + selected.avatarRect.width / 2) > divider ? 'me' : 'contact'
+        }
+        if (!role) {
+          role = (selected.bubbleRect.left + selected.bubbleRect.width / 2) > divider ? 'me' : 'contact'
+        }
         selected.row.setAttribute('data-xusheng-latest-message', role)
         const ids = []
         const urls = []
@@ -2627,7 +2644,15 @@ class DouyinService {
             for (let c = row, d = 0; c && d < 4; c = c.parentElement, d += 1) sig += ' ' + String(c.className || '')
             const me = /isFromMe|MessageItemTextisFromMe/i.test(sig) || /(?:^|[\\s_-])(self|mine|my|right|send|owner)(?:[\\s_-]|$)/i.test(sig)
             const them = /(?:^|[\\s_-])(other|left|receive|peer)(?:[\\s_-]|$)/i.test(sig)
-            const bubble = row.querySelector('[class*="content"], [class*="text"], [class*="bubble"], video, img, [style*="background-image"], [class*="video" i], [class*="image" i], [class*="sticker" i], [class*="emoji" i], [class*="card" i]') || row
+            const avatar = row.querySelector('[class*="avatar" i], img[src*="avatar"], [class*="Avatar" i]')
+            let avatarRect = null
+            if (avatar) {
+              const ar = avatar.getBoundingClientRect()
+              if (ar.width > 0 && ar.height > 0) avatarRect = { left: ar.left, width: ar.width, top: ar.top, height: ar.height }
+            }
+            const bubble = row.querySelector('[class*="MessageItemShareAweme" i], [class*="ShareAweme" i], [class*="MessageItemText" i], [class*="cardMsg" i], [class*="imageMsg" i], [class*="mediaMsg" i], [class*="textMsg" i], [class*="bubble" i], video, img:not([class*="avatar" i])')
+              || row.querySelector('[class*="content"]:not([class*="rowBox"]):not([class*="columnBox"]):not([class*="contentBox"]):not([class*="ClickArea" i]), [class*="text"], [style*="background-image"], [class*="video" i], [class*="image" i], [class*="card" i]')
+              || row
             const bubbleRect = bubble.getBoundingClientRect()
             return {
               withinMessageRow: true,
@@ -2637,6 +2662,7 @@ class DouyinService {
                 width: bubbleRect.width,
                 height: bubbleRect.height,
               },
+              avatarRect,
               me,
               them,
             }
@@ -2980,6 +3006,7 @@ class DouyinService {
     this.lastSeen.set(item.name, item.key)
     this.persistTurn(item.name, (turn) => ({ ...turn, lastHandledKey: item.key }))
     this.incomingQueueMap().delete(item.name)
+    this.fromMeDeferCount?.delete(item.name)
   }
 
   // ① 收集：扫描联系人，把"未消费的新消息"入队。除媒体身份探测外不做任何动作。
@@ -3145,7 +3172,7 @@ class DouyinService {
 
     // 角色判定（三层）。最后一条消息的发送方【无法确认】时绝不抢发——
     // 旧版把 null 当成"对方发的"处理，这是自动回复自言自语循环的直接来源。
-    const fromMe = contact.fromMe === true
+    let fromMe = contact.fromMe === true
       ? true
       : incomingIdentity?.role === 'me'
         ? true
@@ -3155,17 +3182,29 @@ class DouyinService {
     if (fromMe === true) {
       // 竞态保护：最后一条是"我"但预览像对方媒体时，可能是新消息被盖住——不消费，下轮重查
       if (shouldDeferConsumptionOnFromMe(contact.preview, this.lastSent.get(contact.name) || '')) {
-        // 去重：同一联系人每 10 分钟最多提示一次。此处消息 key 含媒体指纹、会逐轮变化，
-        // 仅按 key 去重无效，会每轮（约 5 秒）刷一条日志、疯狂写盘并推高主进程内存。
-        const noticeKey = `defer_on_from_me:${contact.name}`
-        if (Date.now() - (this.lastSkipNotice.get(noticeKey) || 0) >= 10 * 60 * 1000) {
-          this.lastSkipNotice.set(noticeKey, Date.now())
-          this.log('auto_recheck', `${contact.name} 疑似在我回复期间发来新消息，暂不消费，下轮重查`, { name: contact.name, preview: String(contact.preview || '').slice(0, 60) })
+        const deferTimes = (this.fromMeDeferCount?.get(contact.name) || 0) + 1
+        if (deferTimes <= 2) {
+          this.fromMeDeferCount?.set(contact.name, deferTimes)
+          // 去重：同一联系人每 10 分钟最多提示一次。此处消息 key 含媒体指纹、会逐轮变化，
+          // 仅按 key 去重无效，会每轮（约 5 秒）刷一条日志、疯狂写盘并推高主进程内存。
+          const noticeKey = `defer_on_from_me:${contact.name}`
+          if (Date.now() - (this.lastSkipNotice.get(noticeKey) || 0) >= 10 * 60 * 1000) {
+            this.lastSkipNotice.set(noticeKey, Date.now())
+            this.log('auto_recheck', `${contact.name} 疑似在我回复期间发来新消息，暂不消费，下轮重查（第 ${deferTimes} 次暂缓）`, { name: contact.name, preview: String(contact.preview || '').slice(0, 60), deferTimes })
+          }
+          return defer('', 15 * 1000)
         }
-        return defer('', 20 * 1000)
+        // 熔断保护：连续暂缓已达 2 次（累计等待超过 30 秒仍未改变），判定为角色误判，强制放行回复！
+        this.fromMeDeferCount?.delete(contact.name)
+        this.log('auto_recheck', `${contact.name} 媒体消息连续暂缓达上限，触发熔断放行，强制判定为对方新消息并回复`, { name: contact.name, preview: String(contact.preview || '').slice(0, 60) })
+        fromMe = false
+      } else {
+        this.fromMeDeferCount?.delete(contact.name)
+        this.markIncomingConsumed(item)
+        return 'consumed'
       }
-      this.markIncomingConsumed(item)
-      return 'consumed'
+    } else {
+      this.fromMeDeferCount?.delete(contact.name)
     }
     if (fromMe !== false) {
       const noticeKey = `role_unknown:${contact.name}:${currentMessageKey}`
@@ -3289,9 +3328,13 @@ class DouyinService {
           }
           const requiresDecodedVideo = mediaKind === 'video' || mediaCapture.detectedVideo === true
           if (!mediaCapture.frames.length && !hasAudioTranscript && !hasPublicContext) {
-            this.log(requiresDecodedVideo ? 'video_unreadable' : 'media_uncertain', `${contact.name} 媒体画面无法捕获`, { name: contact.name, mediaKind })
-            this.markIncomingConsumed(item)
-            return 'consumed'
+            if (settings.videoLowConfidenceReply === false) {
+              this.log(requiresDecodedVideo ? 'video_unreadable' : 'media_uncertain', `${contact.name} 媒体画面无法捕获且已关闭低置信度回复`, { name: contact.name, mediaKind })
+              this.markIncomingConsumed(item)
+              return 'consumed'
+            }
+            useMediaForReply = false
+            this.log('media_text_fallback', `${contact.name} 媒体画面未捕获，按聊天上下文语境回复`, { name: contact.name, mediaKind })
           }
         }
         aiDraft = await this.ai.draft({ contact: enhancedContact, incoming: contact.preview, incomingMeta: timeMeta, videoFrames: useMediaForReply ? mediaCapture : undefined })
