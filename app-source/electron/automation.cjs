@@ -2411,23 +2411,32 @@ class DouyinService {
     }))()`).catch((error) => { throw new Error(`发送前读取输入框失败：${error.message}`) })
     if (!normalizeEditorText(before.text)) throw new Error('Cannot send an empty message')
     const target = await win.webContents.executeJavaScript(FIND_SEND_TARGET_JS).catch((error) => { throw new Error(`点击发送按钮失败：${error.message}`) })
-    if (!target) throw new Error('Could not find the send button')
-    const point = { x: target.x, y: target.y }
-    const press = () => {
+    const point = target ? { x: target.x, y: target.y } : null
+    const pressMouse = () => {
+      if (!point) return
       win.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y })
       win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, x: point.x, y: point.y })
       win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: point.x, y: point.y })
     }
-    const pressEnter = () => {
+    const pressEnter = async () => {
+      await win.webContents.executeJavaScript(`(() => {
+        const editor = document.querySelector('${EDITOR_SELECTOR}')
+        if (editor) {
+          editor.focus()
+          editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }))
+        }
+      })()`).catch(() => {})
       win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
       win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
     }
-    press()
-    // Douyin usually clears the editor quickly after a successful send. Poll so
-    // fast sends return immediately while still allowing slow acknowledgements.
+    if (target && !target.fallback) {
+      pressMouse()
+    } else {
+      await pressEnter()
+    }
     const started = Date.now()
     let after = { text: before.text }
-    let enterPressed = false
+    let fallbackAttempted = false
     while (Date.now() - started < 5000) {
       await sleep(250)
       after = await win.webContents.executeJavaScript(`(() => {
@@ -2438,14 +2447,15 @@ class DouyinService {
         }
       })()`).catch((error) => { throw new Error(`发送后读取输入框失败：${error.message}`) })
       if (after?.found && !normalizeEditorText(after.text)) return
-      // 点击后 1.5s 仍未确认：按钮定位可能是 fallback 坐标（点到了空白处），
-      // 改用 Enter 键发送（抖音私信输入框 Enter = 发送，Shift+Enter = 换行）。
-      if (!enterPressed && Date.now() - started >= 1500) {
-        enterPressed = true
-        pressEnter()
+      if (!fallbackAttempted && Date.now() - started >= 800) {
+        fallbackAttempted = true
+        await pressEnter()
+        if (point) pressMouse()
+      } else if (Date.now() - started >= 2500) {
+        await pressEnter()
       }
     }
-    throw new Error(`Douyin did not confirm the message was sent; send point=(${point.x}, ${point.y})${target.fallback ? ' (fallback coordinate)' : ''}`)
+    throw new Error(`Douyin did not confirm the message was sent; send point=${point ? `(${point.x}, ${point.y})` : 'none'}${target?.fallback ? ' (fallback coordinate)' : ''}`)
   }
 
   async sendEmoji(name, emojiName = '\u65e9\u4e0a\u597d') {
